@@ -136,27 +136,8 @@ def _model(x, a, b, T1, T2):
 # Public API
 # =============================================================================
 
-def eff2(ptu_path, g2time_ns=100.0, timebin_ns=1.0, seed=0):
-    """
-    Run eff2 g2 analysis on a PTU file.
-
-    Returns a dict with keys:
-        tau     : delay axis (ns)
-        g2      : normalised g2(tau)
-        c       : coincidence histogram (after afterflash removal)
-        c_raw   : coincidence histogram (before afterflash removal)
-        cavg    : background level used for afterflash removal
-        N1, N2  : photon counts per channel
-        TT      : total acquisition time (ps)
-        A       : normalisation factor
-        popt    : fit parameters (a, b, T1, T2) or None if fit failed
-    """
-    raw, _ = read_ptu(ptu_path)
-    chan, times = parse_pt2(raw)
-    order  = np.argsort(times, kind='stable')
-    chan   = chan[order].astype(np.int8)
-    times  = times[order].astype(np.int64)
-
+def _compute_g2(chan, times, g2time_ns, timebin_ns, seed):
+    """Core eff2 algorithm on pre-sorted (chan, times) arrays. Returns result dict."""
     g2time_ps  = int(round(g2time_ns * 1000))
     timebin_ps = int(round(timebin_ns * 1000))
     I          = int(np.ceil(g2time_ps / timebin_ps))
@@ -190,6 +171,44 @@ def eff2(ptu_path, g2time_ns=100.0, timebin_ns=1.0, seed=0):
                 cavg=cavg, N1=N1, N2=N2, TT=TT, A=A, popt=popt)
 
 
+def eff2(ptu_path, g2time_ns=100.0, timebin_ns=1.0, seed=0):
+    """
+    Run eff2 g2 analysis on a PTU file.
+
+    Returns a dict with keys:
+        tau     : delay axis (ns)
+        g2      : normalised g2(tau)
+        c       : coincidence histogram (after afterflash removal)
+        c_raw   : coincidence histogram (before afterflash removal)
+        cavg    : background level used for afterflash removal
+        N1, N2  : photon counts per channel
+        TT      : total acquisition time (ps)
+        A       : normalisation factor
+        popt    : fit parameters (a, b, T1, T2) or None if fit failed
+    """
+    raw, _ = read_ptu(ptu_path)
+    chan, times = parse_pt2(raw)
+    order  = np.argsort(times, kind='stable')
+    return _compute_g2(chan[order].astype(np.int8), times[order].astype(np.int64),
+                       g2time_ns, timebin_ns, seed)
+
+
+def eff2_from_npz(npz_path, g2time_ns=100.0, timebin_ns=1.0, seed=0):
+    """
+    Run eff2 g2 analysis on a .npz file saved by picoharp.ph_acquire().
+    The .npz must contain arrays 'ch0' and 'ch1' (absolute photon times in ps).
+    Returns the same result dict as eff2().
+    """
+    npz   = np.load(npz_path)
+    ch0   = npz['ch0'].astype(np.int64)
+    ch1   = npz['ch1'].astype(np.int64)
+    chan  = np.concatenate([np.zeros(len(ch0), dtype=np.int8),
+                            np.ones( len(ch1), dtype=np.int8)])
+    times = np.concatenate([ch0, ch1])
+    order = np.argsort(times, kind='stable')
+    return _compute_g2(chan[order], times[order], g2time_ns, timebin_ns, seed)
+
+
 def plot_g2(result, out_path):
     """Save a g2(tau) plot with optional fit to out_path."""
     tau, g2_arr, popt = result['tau'], result['g2'], result['popt']
@@ -213,25 +232,28 @@ def plot_g2(result, out_path):
     print(f"Saved {out_path}")
 
 
-def run(ptu_path, out_folder='g2_data', g2time_ns=100.0, timebin_ns=1.0, seed=0):
+def run(path, out_folder='g2_data', g2time_ns=100.0, timebin_ns=1.0, seed=0):
     """
-    Full pipeline: parse PTU, compute g2, save .npz and .png.
+    Full pipeline: parse .ptu or .npz, compute g2, save results as .npz and .png.
 
     Args:
-        ptu_path    : path to .ptu file
+        path        : path to .ptu or .npz file
         out_folder  : folder to save outputs (default 'g2_data')
         g2time_ns   : correlation half-window in ns
         timebin_ns  : bin width in ns
         seed        : random seed for afterflash removal
 
-    Returns result dict from eff2().
+    Returns result dict.
     """
     os.makedirs(out_folder, exist_ok=True)
-    stem   = os.path.splitext(os.path.basename(ptu_path))[0]
+    stem   = os.path.splitext(os.path.basename(path))[0]
     prefix = os.path.join(out_folder, stem)
 
-    print(f"Running g2 on {ptu_path}...")
-    result = eff2(ptu_path, g2time_ns=g2time_ns, timebin_ns=timebin_ns, seed=seed)
+    print(f"Running g2 on {path}...")
+    if path.endswith('.npz'):
+        result = eff2_from_npz(path, g2time_ns=g2time_ns, timebin_ns=timebin_ns, seed=seed)
+    else:
+        result = eff2(path, g2time_ns=g2time_ns, timebin_ns=timebin_ns, seed=seed)
 
     print(f"  N1={result['N1']:,}  N2={result['N2']:,}  cavg={result['cavg']:.2f}")
     if result['popt'] is not None:
