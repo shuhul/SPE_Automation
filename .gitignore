@@ -1,0 +1,14 @@
+data/
+g2_data/
+focus/
+calibration/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.npy
+*.npz
+*.ptu
+*.mat
+*.png
+*.pdf
