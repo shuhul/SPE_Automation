@@ -7,6 +7,7 @@ import classifier as classifer
 from tqdm import tqdm
 import os
 import time
+import _matlab_session
 
 # --- EXIT CODES ---
 EXIT_SUCCESS = 0
@@ -63,7 +64,7 @@ def pl_spec(xdim, ydim, dx, dy, foldername, current_user, center=(0,0),
 
     # --- Hardware Initialization ---
     print('Connecting to matlab...')
-    eng = matlab.engine.connect_matlab('MySharedSession')
+    eng = matlab.engine.connect_matlab(_matlab_session.name)
 
     print('Getting wavelengths and setting up...')
     folder_path = os.path.join(data_folder, foldername)
@@ -211,9 +212,9 @@ def pl_spec(xdim, ydim, dx, dy, foldername, current_user, center=(0,0),
 
 
 
-def pl_spec_manual(xdim, ydim, dx, dy, foldername, current_user, center=(0,0), 
+def pl_spec_manual(xdim, ydim, dx, dy, foldername, current_user, center=(0,0),
                    grating=150, exposure_time=1, center_wavelength=700, classification_threshold=1.05,
-                   scan_type='coarse', data_folder='data'):
+                   scan_type='coarse', data_folder='data', eng=None):
     """
     Executes the PL Spectrum scan and saves the acquired data to a structured directory.
 
@@ -231,13 +232,15 @@ def pl_spec_manual(xdim, ydim, dx, dy, foldername, current_user, center=(0,0),
         classification_threshold (float): Minimum fraction of the laser peak that emitter peak should be
         scan_type (str): Subfolder category for the scan (e.g., 'coarse', 'fine'). Default is 'coarse'.
         data_folder (str): The root directory for all saved data. Default is 'data'.
+        eng: Optional already-connected matlab.engine object. If None, connects using _matlab_session.name.
     """
 
     out_of_focus_detected = False
 
     # *** Hardware Initialization ***
     print('Connecting to matlab...')
-    eng = matlab.engine.connect_matlab('MySharedSession')
+    if eng is None:
+        eng = matlab.engine.connect_matlab(_matlab_session.name)
 
     print('Getting wavelengths and setting up...')
     # Folder path now includes scan_type
@@ -368,7 +371,7 @@ engine = None
 def connect_matlab():
     global engine
     print('Connecting to matlab...')
-    engine = matlab.engine.connect_matlab('MySharedSession')
+    engine = matlab.engine.connect_matlab(_matlab_session.name)
     print('Done connecting to matlab!')
 
 
@@ -425,7 +428,7 @@ def pl_single_scan():
 #             return arr
 
 #     print('Connecting to matlab...')
-#     eng = matlab.engine.connect_matlab('MySharedSession')
+#     eng = matlab.engine.connect_matlab(_matlab_session.name)
 
 #     print('Getting wavelengths...')
 

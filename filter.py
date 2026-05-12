@@ -80,15 +80,15 @@ def filter_off():
 def flip_up():
     global flipper
     print("Flipping up...")
-    flipper.SetPosition(2, 60000) 
-    time.sleep(wait4action) 
+    flipper.SetPosition(2, 60000)
+    time.sleep(wait4action)
     print("Done Flipping!")
 
 def flip_down():
     global flipper
     print("Flipping down...")
-    flipper.SetPosition(1, 60000) 
-    time.sleep(wait4action) 
+    flipper.SetPosition(1, 60000)
+    time.sleep(wait4action)
     print("Done Flipping!")
 
 def rotation_home():

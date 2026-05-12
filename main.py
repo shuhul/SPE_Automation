@@ -54,24 +54,46 @@ def run_scan(xdim, ydim, dx, dy, foldername, current_user, center,
 # 1. HELPERS
 # ============================================================================
 
-def extract_zpl(foldername, scan_type, laser_cutoff_nm=560):
-    """Return the peak emission wavelength from a long scan, ignoring the laser region."""
-    path = f'data/{foldername}/{scan_type}'
-    out  = np.load(f'{path}/out.npy')
-    wl   = np.load(f'{path}/wl.npy')
-    spectrum = out[0, 0, :]
-    mask     = wl > laser_cutoff_nm
+def find_emission_fwhm_center(spectrum, wl, laser_cutoff_nm=560):
+    """Return the FWHM centre of the brightest emission peak above laser_cutoff_nm.
+    Falls back to the peak wavelength if FWHM crossings cannot be found."""
+    mask = wl > laser_cutoff_nm
     if not mask.any():
         return None
-    return float(wl[mask][np.argmax(spectrum[mask])])
+    wl_m = wl[mask]
+    sp_m = spectrum[mask]
+    peak_idx = int(np.argmax(sp_m))
+    half_max = sp_m[peak_idx] / 2.0
+
+    left_below  = np.where(sp_m[:peak_idx] < half_max)[0]
+    right_below = np.where(sp_m[peak_idx:] < half_max)[0]
+
+    if left_below.size == 0 or right_below.size == 0:
+        return float(wl_m[peak_idx])
+
+    # interpolate left crossing
+    li = left_below[-1]
+    if li + 1 < len(wl_m):
+        x0, x1 = wl_m[li], wl_m[li + 1]
+        y0, y1 = sp_m[li], sp_m[li + 1]
+        left_wl = x0 + (half_max - y0) * (x1 - x0) / (y1 - y0) if y1 != y0 else (x0 + x1) / 2
+    else:
+        left_wl = wl_m[li]
+
+    # interpolate right crossing
+    ri = peak_idx + right_below[0]
+    if ri > 0:
+        x0, x1 = wl_m[ri - 1], wl_m[ri]
+        y0, y1 = sp_m[ri - 1], sp_m[ri]
+        right_wl = x0 + (half_max - y0) * (x1 - x0) / (y1 - y0) if y1 != y0 else (x0 + x1) / 2
+    else:
+        right_wl = wl_m[ri]
+
+    return float((left_wl + right_wl) / 2.0)
 
 
 def angle_for_wavelength(cal_folder, target_wl):
-    """
-    Look up the rotation stage angle (degrees) corresponding to target_wl (nm)
-    using the calibration table in calibration/<cal_folder>/calibration_table.npy.
-    Returns None if calibration data is missing or no valid entry found.
-    """
+    """Look up the rotation stage angle for target_wl (nm) from the calibration table."""
     table_path = os.path.join('calibration', cal_folder, 'calibration_table.npy')
     if not os.path.exists(table_path):
         return None
@@ -82,6 +104,91 @@ def angle_for_wavelength(cal_folder, target_wl):
     angles = table[valid, 0]
     wls    = table[valid, 1]
     return float(angles[np.argmin(np.abs(wls - target_wl))])
+
+
+def _bandpass_slope(cal_folder, target_wl, angle_window=30.0):
+    """Estimate dangle/dwl (degrees per nm) near target_wl from the calibration table.
+    Filters to entries within angle_window degrees of the expected angle to exclude
+    spurious calibration points (e.g. stray laser reflections at wrong angles)."""
+    table_path = os.path.join('calibration', cal_folder, 'calibration_table.npy')
+    if not os.path.exists(table_path):
+        return None
+    table = np.load(table_path)
+    valid = ~np.isnan(table[:, 1])
+    if valid.sum() < 2:
+        return None
+    angles = table[valid, 0]
+    wls    = table[valid, 1]
+
+    # find the expected angle for this wavelength, then restrict to entries near it
+    expected_angle = float(angles[np.argmin(np.abs(wls - target_wl))])
+    angle_diff = np.abs(((angles - expected_angle) + 180) % 360 - 180)
+    clean = angle_diff <= angle_window
+    if clean.sum() < 2:
+        return None
+    angles, wls = angles[clean], wls[clean]
+
+    order  = np.argsort(wls)
+    angles, wls = angles[order], wls[order]
+    idx = int(np.argmin(np.abs(wls - target_wl)))
+    i0  = max(0, idx - 1)
+    i1  = min(len(wls) - 1, idx + 1)
+    dwl = wls[i1] - wls[i0]
+    if dwl == 0:
+        return None
+    raw_dangle = angles[i1] - angles[i0]
+    dangle = (raw_dangle + 180) % 360 - 180
+    return float(dangle / dwl)
+
+
+def run_bandpass_setup(target_wl, cal_folder, current_user,
+                       tolerance_nm=2.0, max_attempts=3):
+    """Flip filter in, rotate to target_wl, verify FWHM centre with proportional feedback.
+
+    Returns True if aligned within tolerance.
+    Returns False after max_attempts — sends Telegram notification and flips filter back up.
+    """
+    angle = angle_for_wavelength(cal_folder, target_wl)
+    if angle is None:
+        print(f"No calibration data for {target_wl:.1f} nm — skipping filter setup.")
+        return False
+
+    slope = _bandpass_slope(cal_folder, target_wl)  # dangle/dwl, may be None
+
+    if pl_spec.engine is None:
+        pl_spec.connect_matlab()
+    fil.flip_up()
+
+    for attempt in range(max_attempts):
+        print(f"Bandpass attempt {attempt + 1}/{max_attempts}: moving to {angle:.2f}°...")
+        fil.rotation_move(angle)
+
+        intensity, wl = pl_spec.pl_single_scan()
+        measured_wl = find_emission_fwhm_center(np.array(intensity).flatten(),
+                                                np.array(wl).flatten())
+        if measured_wl is None:
+            print("  Could not detect emission peak in filtered spectrum.")
+            break
+
+        error = target_wl - measured_wl
+        print(f"  Target: {target_wl:.1f} nm  Measured: {measured_wl:.1f} nm  Error: {error:+.1f} nm")
+
+        if abs(error) <= tolerance_nm:
+            print("  Bandpass aligned.")
+            return True
+
+        if slope is not None:
+            correction = error * slope
+            angle += correction
+            print(f"  Correction: {correction:+.2f} deg  new angle: {angle:.2f} deg")
+        else:
+            print("  No slope data — cannot correct angle.")
+            break
+
+    pl_spec.send_telegram_message(current_user,
+        f"WARNING: Bandpass could not align to {target_wl:.1f} nm after {max_attempts} attempts.")
+    fil.flip_down()
+    return False
 
 
 def latest_calibration_folder():
@@ -543,28 +650,35 @@ class MainWindow(QMainWindow):
         self._start_scan_worker(params)
 
     def handle_long_result(self, foldername, scan_type):
-        """Long scan done. Set up filter, then run g2 acquisition."""
-        zpl = extract_zpl(foldername, scan_type)
-        if zpl is None:
-            print("Could not extract ZPL — skipping filter setup.")
-        else:
-            print(f"ZPL detected at {zpl:.1f} nm")
-            cal_folder = self.in_cal.text().strip()
-            angle = angle_for_wavelength(cal_folder, zpl)
-            if angle is not None:
-                print(f"Moving filter to {angle:.1f}° for {zpl:.1f} nm...")
-                fil.flip_down()
-                fil.rotation_move(angle)
-                # TODO: verify filter is correctly set before running g2
-                #   - Take a short spectrum with filter in (flip_down)
-                #   - Take a short spectrum without filter (flip_up)
-                #   - Check that peak within bandpass is >= 90% of peak without bandpass
-                #   - If not, adjust rotation angle and retry until condition is met
-                #   - Only proceed to g2 once this check passes
-            else:
-                print(f"No calibration angle found for {zpl:.1f} nm — skipping filter.")
+        """Long scan done — extract ZPL, set up bandpass filter, then run g2."""
+        path = f'data/{foldername}/{scan_type}'
+        try:
+            out = np.load(f'{path}/out.npy')
+            wl  = np.load(f'{path}/wl.npy')
+        except FileNotFoundError:
+            print("Long scan data not found — skipping filter setup.")
+            self.trigger_g2()
+            return
 
-        self.trigger_g2()
+        target_wl = find_emission_fwhm_center(out[0, 0, :], wl)
+        if target_wl is None:
+            print("Could not find emission peak — skipping filter setup.")
+            self.trigger_g2()
+            return
+
+        print(f"ZPL FWHM centre: {target_wl:.1f} nm")
+        cal_folder = self.in_cal.text().strip()
+
+        aligned = run_bandpass_setup(
+            target_wl    = target_wl,
+            cal_folder   = cal_folder,
+            current_user = self.in_user.text(),
+        )
+
+        if aligned:
+            self.trigger_g2()
+        else:
+            self.trigger_next_fine_scan()
 
     # -------------------------------------------------------------------------
     # G2
@@ -594,7 +708,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"G2 analysis error: {e}")
 
-        fil.flip_up()   # remove filter before next scan
+        fil.flip_down()   # remove filter before next scan
         self.trigger_next_fine_scan()
 
     # -------------------------------------------------------------------------
