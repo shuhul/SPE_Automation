@@ -1,6 +1,20 @@
 import sys
+import os
 import time
 import clr
+
+_POSITION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rotation_last_pos.txt')
+
+def _save_pos(pos):
+    with open(_POSITION_FILE, 'w') as f:
+        f.write(str(float(pos)))
+
+def _load_pos():
+    try:
+        with open(_POSITION_FILE) as f:
+            return float(f.read().strip())
+    except Exception:
+        return None
 
 sys.path.append(r"C:\Program Files\Thorlabs\Kinesis")
 clr.AddReference("Thorlabs.MotionControl.DeviceManagerCLI")
@@ -93,14 +107,27 @@ def flip_down():
 
 def rotation_home():
     global rotation
-    print("Homing rotation stage...")
-    rotation.Home(60000) 
+    last_pos = _load_pos()
+    if last_pos is None:
+        print("WARNING: No saved position found — cannot determine safe homing direction.")
+        print("         Move the stage to a known position via code first, then home.")
+        return
+    direction = 'clockwise' if last_pos > 180 else 'counterclockwise'
+    params = rotation.GetHomingParams()
+    dt = type(params.Direction)
+    params.Direction = dt.Clockwise if direction == 'clockwise' else dt.CounterClockwise
+    rotation.SetHomingParams(params)
+    print(f"Homing rotation stage ({direction}, last saved position: {last_pos:.1f} deg)...")
+    rotation.Home(60000)
+    _save_pos(0.0)
+    set_rotation_mode('quickest')
     print("Done Homing!")
 
 def rotation_move(target):
     global rotation
     print(f"Moving to {target} degrees...")
     rotation.MoveTo(Decimal(float(target)), 60000)
+    _save_pos(target)
     print("Done Moving!")
 
 def set_rotation_mode(mode="quickest"):

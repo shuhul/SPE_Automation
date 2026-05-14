@@ -12,3 +12,4 @@ __pycache__/
 *.mat
 *.png
 *.pdf
+rotation_last_pos.txt
