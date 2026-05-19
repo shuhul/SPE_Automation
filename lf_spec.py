@@ -54,15 +54,23 @@ def lf_connect():
         print('LightField bridge already running.')
         return
     print('Starting LightField bridge (will open LightField)...')
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
     subprocess.Popen(
         [_PYTHON, _BRIDGE],
         creationflags=subprocess.CREATE_NEW_CONSOLE,
+        startupinfo=si,
     )
     for i in range(60):
         time.sleep(1)
-        if _bridge_alive():
-            print('LightField bridge ready.')
-            return
+        try:
+            resp = _send({'cmd': 'status'}, timeout=2)
+            if resp.get('lf_connected'):
+                print('LightField bridge ready.')
+                return
+        except Exception:
+            pass
     raise RuntimeError('LightField bridge did not start within 60s.')
 
 

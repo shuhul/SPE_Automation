@@ -45,23 +45,19 @@ GRATING_150 = '[800nm,150][2][0]'
 GRATING_600 = '[500nm,600][1][0]'
 
 # ── State ─────────────────────────────────────────────────────────────────────
-_auto      = None
-_exp       = None
-_connected = False
-_lock      = threading.Lock()   # serialise all LF operations
+_auto         = None
+_exp          = None
+_connected    = False
+_lock         = threading.Lock()   # serialise all LF operations
+_connect_lock = threading.Lock()   # prevent concurrent _lf_connect() calls
 
 
 # ── LightField connection ─────────────────────────────────────────────────────
 
-LF_EXPERIMENT = r"C:\Users\smujoo\Documents\LightField\Experiments\PL.lfe"
-
 def _lf_connect():
     global _auto, _exp, _connected
     try:
-        args = List[String]()
-        if os.path.exists(LF_EXPERIMENT):
-            args.Add(LF_EXPERIMENT)
-        _auto = Automation(True, args)
+        _auto = Automation(True, List[String]())
         _exp  = _auto.LightFieldApplication.Experiment
         # Wait for LightField to finish loading before marking as connected
         for _ in range(60):
@@ -109,9 +105,12 @@ signal.signal(signal.SIGINT,  _signal_handler)
 
 
 def _ensure_connected():
-    if not _connected:
+    if _connected:
+        return True
+    with _connect_lock:
+        if _connected:   # re-check after acquiring lock
+            return True
         return _lf_connect()
-    return True
 
 
 # ── Acquire ───────────────────────────────────────────────────────────────────
@@ -245,10 +244,8 @@ def _serve():
 
 if __name__ == '__main__':
     log.info('LightField bridge starting...')
-    # Start socket server in a background thread so the port opens immediately,
-    # then connect to LightField on the main thread (required for COM event dispatch).
     threading.Thread(target=_serve, daemon=True).start()
-    _lf_connect()
-    # Keep main thread alive so COM events continue to dispatch.
+    with _connect_lock:
+        _lf_connect()
     while True:
         time.sleep(1)
