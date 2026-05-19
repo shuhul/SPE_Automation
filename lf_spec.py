@@ -124,5 +124,5 @@ def lf_get_wavelengths():
 
 def lf_acquire():
     """Trigger a single acquisition. Returns (intensity, wavelength) as numpy arrays."""
-    resp = _send({'cmd': 'acquire'}, timeout=65)
+    resp = _send({'cmd': 'acquire'}, timeout=120)
     return np.array(resp['intensity']), np.array(resp['wl'])

@@ -46,12 +46,14 @@ GRATING_150 = '[800nm,150][2][0]'
 GRATING_600 = '[500nm,600][1][0]'
 
 # ── State ─────────────────────────────────────────────────────────────────────
-_auto         = None
-_exp          = None
-_connected    = False
-_lock         = threading.Lock()   # serialise all LF operations
-_connect_lock = threading.Lock()   # prevent concurrent _lf_connect() calls
-_acq_queue    = queue.Queue()      # acquisition requests routed to main thread
+_auto              = None
+_exp               = None
+_connected         = False
+_lock              = threading.Lock()   # serialise all LF operations
+_connect_lock      = threading.Lock()   # prevent concurrent _lf_connect() calls
+_acq_queue         = queue.Queue()      # acquisition requests routed to main thread
+_last_acq_done     = 0.0                # time.time() when last acquisition completed
+_MIN_ACQ_INTERVAL  = 1.5               # minimum seconds between acquisitions (LF save time)
 
 
 # ── LightField connection ─────────────────────────────────────────────────────
@@ -109,8 +111,20 @@ def _ensure_connected():
 
 def _do_acquire_main_thread():
     """Called only from the main thread. Returns (data_list, wl_list) or raises."""
+    global _exp, _last_acq_done
+
+    # Enforce minimum interval since last acquisition so LightField can finish
+    # saving the previous frame before we call Acquire() again.
+    wait = _MIN_ACQ_INTERVAL - (time.time() - _last_acq_done)
+    if wait > 0:
+        time.sleep(wait)
+
+    # Refresh _exp reference
+    _exp = _auto.LightFieldApplication.Experiment
+
     result = {}
     done   = threading.Event()
+    acq_ex = [None]
 
     def on_data(sender, args):
         try:
@@ -120,16 +134,30 @@ def _do_acquire_main_thread():
             result['error'] = str(e)
         done.set()
 
-    _exp.ImageDataSetReceived += on_data
-    _exp.Acquire()
-    fired = done.wait(timeout=60)
-    _exp.ImageDataSetReceived -= on_data
+    def _fire_acquire():
+        try:
+            _exp.ImageDataSetReceived += on_data
+            _exp.Acquire()
+        except Exception as e:
+            acq_ex[0] = e
+            done.set()
 
+    threading.Thread(target=_fire_acquire, daemon=True).start()
+
+    fired = done.wait(timeout=60)
+    try:
+        _exp.ImageDataSetReceived -= on_data
+    except Exception:
+        pass
+
+    if acq_ex[0] is not None:
+        raise acq_ex[0]
     if not fired:
         raise TimeoutError('Acquisition timed out after 60s')
     if 'error' in result:
         raise RuntimeError(result['error'])
 
+    _last_acq_done = time.time()
     return result['data'], list(_exp.SystemColumnCalibration)
 
 
