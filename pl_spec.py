@@ -3,6 +3,7 @@ import numpy as np
 import threading
 import requests
 import sgd
+import lf_spec
 import classifier as classifer
 from tqdm import tqdm
 import os
@@ -214,7 +215,7 @@ def pl_spec(xdim, ydim, dx, dy, foldername, current_user, center=(0,0),
 
 def pl_spec_manual(xdim, ydim, dx, dy, foldername, current_user, center=(0,0),
                    grating=150, exposure_time=1, center_wavelength=700, classification_threshold=1.05,
-                   scan_type='coarse', data_folder='data', eng=None):
+                   scan_type='coarse', data_folder='data'):
     """
     Executes the PL Spectrum scan and saves the acquired data to a structured directory.
 
@@ -232,37 +233,25 @@ def pl_spec_manual(xdim, ydim, dx, dy, foldername, current_user, center=(0,0),
         classification_threshold (float): Minimum fraction of the laser peak that emitter peak should be
         scan_type (str): Subfolder category for the scan (e.g., 'coarse', 'fine'). Default is 'coarse'.
         data_folder (str): The root directory for all saved data. Default is 'data'.
-        eng: Optional already-connected matlab.engine object. If None, connects using _matlab_session.name.
     """
 
     out_of_focus_detected = False
 
     # *** Hardware Initialization ***
-    print('Connecting to matlab...')
-    if eng is None:
-        eng = matlab.engine.connect_matlab(_matlab_session.name)
+    print('Setting up spectrometer...')
+    lf_spec.lf_setup(
+        exposure_s=exposure_time,
+        center_wavelength=center_wavelength,
+        grating=grating,
+    )
 
     print('Getting wavelengths and setting up...')
-    # Folder path now includes scan_type
     folder_path = os.path.join(data_folder, foldername, scan_type)
     os.makedirs(folder_path, exist_ok=True)
 
-    wl = np.array(eng.workspace['wl']).flatten()
+    wl = lf_spec.lf_get_wavelengths()
     np.save(os.path.join(folder_path, 'wl.npy'), wl)
     num = len(wl)
-
-    # Map the grating number to the correct string
-    if grating == 150:
-        grating_str = "[800nm,150][2][0]"
-    elif grating == 600:
-        grating_str = "[500nm,600][1][0]"
-    else:
-        raise ValueError("Invalid grating selected. Options are 150 or 600.")
-
-    # Set Exposure Time, Center Wavelength, and Grating dynamically
-    eng.eval(f"instance1.set_exposure({int(exposure_time*1000)});", nargout=0)
-    eng.eval(f"instance1.set(PrincetonInstruments.LightField.AddIns.SpectrometerSettings.GratingCenterWavelength, {int(center_wavelength)});", nargout=0)
-    eng.eval(f'instance1.set(PrincetonInstruments.LightField.AddIns.SpectrometerSettings.Grating, "{grating_str}");', nargout=0)
 
     print('Starting scan...')
     sgd.sgd_on()
@@ -295,11 +284,10 @@ def pl_spec_manual(xdim, ydim, dx, dy, foldername, current_user, center=(0,0),
                 
                 # Move and Acquire
                 sgd.set_position(x, y, silent=True)
-                intensity, wavelength = eng.eval("instance1.acquire;", nargout=2)
-                
+                intensity, wl = lf_spec.lf_acquire()
+
                 # Process Data
-                intensity = fix_length(np.array(intensity).flatten(), num)
-                wl = np.array(wavelength).flatten() 
+                intensity = fix_length(intensity, num)
                 np.save(os.path.join(folder_path, 'wl.npy'), wl)
 
                 # Focus Check Logic
