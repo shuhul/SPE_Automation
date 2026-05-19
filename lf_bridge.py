@@ -1,0 +1,254 @@
+"""
+Persistent LightField bridge server.
+Keeps a LightField Automation connection alive between Python script runs.
+Listens on localhost:27028 for JSON commands.
+
+Start automatically via lf_spec.lf_connect() — do not run manually.
+"""
+import sys
+import os
+import json
+import socket
+import threading
+import logging
+import time
+import atexit
+import signal
+from logging.handlers import RotatingFileHandler
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lf_bridge.log')
+_handler  = RotatingFileHandler(_LOG_FILE, maxBytes=1_000_000, backupCount=2)
+_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+log = logging.getLogger('lf_bridge')
+log.setLevel(logging.INFO)
+log.addHandler(_handler)
+
+PORT = 27028
+
+# ── LightField imports ────────────────────────────────────────────────────────
+_LF_PATH = r"C:\Program Files\Princeton Instruments\LightField"
+sys.path.append(_LF_PATH)
+sys.path.append(_LF_PATH + r"\AddInViews")
+
+import clr
+clr.AddReference('PrincetonInstruments.LightFieldViewV5')
+clr.AddReference('PrincetonInstruments.LightField.AutomationV5')
+clr.AddReference('PrincetonInstruments.LightFieldAddInSupportServices')
+
+from PrincetonInstruments.LightField.Automation import Automation
+from PrincetonInstruments.LightField.AddIns import SpectrometerSettings, CameraSettings
+from System.Collections.Generic import List
+from System import String
+
+GRATING_150 = '[800nm,150][2][0]'
+GRATING_600 = '[500nm,600][1][0]'
+
+# ── State ─────────────────────────────────────────────────────────────────────
+_auto      = None
+_exp       = None
+_connected = False
+_lock      = threading.Lock()   # serialise all LF operations
+
+
+# ── LightField connection ─────────────────────────────────────────────────────
+
+LF_EXPERIMENT = r"C:\Users\smujoo\Documents\LightField\Experiments\PL.lfe"
+
+def _lf_connect():
+    global _auto, _exp, _connected
+    try:
+        args = List[String]()
+        if os.path.exists(LF_EXPERIMENT):
+            args.Add(LF_EXPERIMENT)
+        _auto = Automation(True, args)
+        _exp  = _auto.LightFieldApplication.Experiment
+        # Wait for LightField to finish loading before marking as connected
+        for _ in range(60):
+            try:
+                if _exp.IsReadyToRun:
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+        else:
+            log.warning('LightField did not become ready within 60s — proceeding anyway.')
+        _connected = True
+        log.info(f"Connected to LightField. Experiment: '{_exp.Name}'")
+        return True
+    except Exception as e:
+        _connected = False
+        log.error(f"Failed to connect to LightField: {e}")
+        return False
+
+
+def _cleanup():
+    """Always call Dispose() on exit so LightField doesn't hang on next startup."""
+    global _auto, _connected
+    if _auto is not None:
+        try:
+            _auto.Dispose()
+            log.info('LightField Automation disposed cleanly.')
+        except Exception as e:
+            log.error(f'Error during Dispose: {e}')
+        _auto      = None
+        _connected = False
+
+
+atexit.register(_cleanup)
+
+
+def _signal_handler(sig, frame):
+    log.info(f'Bridge received signal {sig}, shutting down cleanly...')
+    _cleanup()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT,  _signal_handler)
+
+
+def _ensure_connected():
+    if not _connected:
+        return _lf_connect()
+    return True
+
+
+# ── Acquire ───────────────────────────────────────────────────────────────────
+
+def _acquire():
+    result = {}
+    done   = threading.Event()
+
+    def on_data(sender, args):
+        try:
+            frame          = args.ImageDataSet.GetFrame(0, 0)
+            result['data'] = list(frame.GetData())
+        except Exception as e:
+            result['error'] = str(e)
+        done.set()
+
+    _exp.ImageDataSetReceived += on_data
+    _exp.Acquire()
+    fired = done.wait(timeout=60)
+    _exp.ImageDataSetReceived -= on_data
+
+    if not fired:
+        raise TimeoutError('Acquisition timed out after 60s')
+    if 'error' in result:
+        raise RuntimeError(result['error'])
+
+    return result['data'], list(_exp.SystemColumnCalibration)
+
+
+# ── Command dispatch ──────────────────────────────────────────────────────────
+
+def _handle(cmd):
+    global _connected
+    name = cmd.get('cmd')
+
+    if name == 'status':
+        return {'status': 'ok', 'lf_connected': _connected}
+
+    if name == 'shutdown':
+        log.info('Shutdown command received.')
+        threading.Thread(target=lambda: (time.sleep(0.2), _cleanup(), os._exit(0)), daemon=True).start()
+        return {'status': 'ok', 'message': 'Bridge shutting down.'}
+
+    if name == 'reconnect':
+        ok = _lf_connect()
+        return {'status': 'ok' if ok else 'error', 'lf_connected': ok}
+
+    if not _ensure_connected():
+        return {'status': 'error', 'message': 'LightField not connected. Reopen LightField then call lf_reconnect().'}
+
+    try:
+        if name == 'acquire':
+            intensity, wl = _acquire()
+            return {'status': 'ok', 'intensity': intensity, 'wl': wl}
+
+        elif name == 'get_wavelengths':
+            return {'status': 'ok', 'wl': list(_exp.SystemColumnCalibration)}
+
+        elif name == 'set_exposure':
+            _exp.SetValue(CameraSettings.ShutterTimingExposureTime, float(cmd['value']) * 1000)
+            return {'status': 'ok'}
+
+        elif name == 'set_center_wavelength':
+            _exp.SetValue(SpectrometerSettings.GratingCenterWavelength, float(cmd['value']))
+            return {'status': 'ok'}
+
+        elif name == 'set_grating':
+            g = cmd['value']
+            if g == 150: g = GRATING_150
+            elif g == 600: g = GRATING_600
+            _exp.SetValue(SpectrometerSettings.GratingSelected, g)
+            return {'status': 'ok'}
+
+        elif name == 'setup':
+            _exp.SetValue(CameraSettings.ShutterTimingExposureTime,
+                          float(cmd.get('exposure_s', 1)) * 1000)
+            _exp.SetValue(SpectrometerSettings.GratingCenterWavelength,
+                          float(cmd.get('center_wavelength', 700)))
+            g = cmd.get('grating', 150)
+            if g == 150: g = GRATING_150
+            elif g == 600: g = GRATING_600
+            _exp.SetValue(SpectrometerSettings.GratingSelected, g)
+            return {'status': 'ok'}
+
+        else:
+            return {'status': 'error', 'message': f'Unknown command: {name}'}
+
+    except Exception as e:
+        _connected = False
+        log.error(f'Command "{name}" failed (marking LF disconnected): {e}')
+        return {'status': 'error', 'message': str(e)}
+
+
+# ── TCP server ────────────────────────────────────────────────────────────────
+
+def _handle_client(conn):
+    try:
+        data = b''
+        while b'\n' not in data:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        cmd      = json.loads(data.decode())
+        with _lock:
+            response = _handle(cmd)
+        conn.sendall((json.dumps(response) + '\n').encode())
+    except Exception as e:
+        log.error(f'Client handler error: {e}')
+        try:
+            conn.sendall((json.dumps({'status': 'error', 'message': str(e)}) + '\n').encode())
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+
+def _serve():
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(('127.0.0.1', PORT))
+    srv.listen(5)
+    log.info(f'Bridge listening on localhost:{PORT}')
+    while True:
+        try:
+            conn, _ = srv.accept()
+            threading.Thread(target=_handle_client, args=(conn,), daemon=True).start()
+        except Exception as e:
+            log.error(f'Server accept error: {e}')
+
+
+if __name__ == '__main__':
+    log.info('LightField bridge starting...')
+    # Start socket server in a background thread so the port opens immediately,
+    # then connect to LightField on the main thread (required for COM event dispatch).
+    threading.Thread(target=_serve, daemon=True).start()
+    _lf_connect()
+    # Keep main thread alive so COM events continue to dispatch.
+    while True:
+        time.sleep(1)
