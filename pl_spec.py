@@ -238,20 +238,27 @@ def pl_spec_manual(xdim, ydim, dx, dy, foldername, current_user, center=(0,0),
     out_of_focus_detected = False
 
     # *** Hardware Initialization ***
-    print('Setting up spectrometer...')
-    lf_spec.lf_setup(
-        exposure_s=exposure_time,
-        center_wavelength=center_wavelength,
-        grating=grating,
-    )
+    print('Connecting to matlab...')
+    eng = matlab.engine.connect_matlab(_matlab_session.name)
 
     print('Getting wavelengths and setting up...')
     folder_path = os.path.join(data_folder, foldername, scan_type)
     os.makedirs(folder_path, exist_ok=True)
 
-    wl = lf_spec.lf_get_wavelengths()
+    wl = np.array(eng.workspace['wl']).flatten()
     np.save(os.path.join(folder_path, 'wl.npy'), wl)
     num = len(wl)
+
+    if grating == 150:
+        grating_str = "[800nm,150][2][0]"
+    elif grating == 600:
+        grating_str = "[500nm,600][1][0]"
+    else:
+        raise ValueError("Invalid grating selected. Options are 150 or 600.")
+
+    eng.eval(f"instance1.set_exposure({int(exposure_time*1000)});", nargout=0)
+    eng.eval(f"instance1.set(PrincetonInstruments.LightField.AddIns.SpectrometerSettings.GratingCenterWavelength, {int(center_wavelength)});", nargout=0)
+    eng.eval(f'instance1.set(PrincetonInstruments.LightField.AddIns.SpectrometerSettings.Grating, "{grating_str}");', nargout=0)
 
     print('Starting scan...')
     sgd.sgd_on()
@@ -284,10 +291,11 @@ def pl_spec_manual(xdim, ydim, dx, dy, foldername, current_user, center=(0,0),
                 
                 # Move and Acquire
                 sgd.set_position(x, y, silent=True)
-                intensity, wl = lf_spec.lf_acquire()
+                intensity, wavelength = eng.eval("instance1.acquire;", nargout=2)
 
                 # Process Data
-                intensity = fix_length(intensity, num)
+                intensity = fix_length(np.array(intensity).flatten(), num)
+                wl = np.array(wavelength).flatten()
                 np.save(os.path.join(folder_path, 'wl.npy'), wl)
 
                 # Focus Check Logic

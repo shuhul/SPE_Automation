@@ -14,6 +14,7 @@ import logging
 import time
 import atexit
 import signal
+import queue
 from logging.handlers import RotatingFileHandler
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -50,6 +51,7 @@ _exp          = None
 _connected    = False
 _lock         = threading.Lock()   # serialise all LF operations
 _connect_lock = threading.Lock()   # prevent concurrent _lf_connect() calls
+_acq_queue    = queue.Queue()      # acquisition requests routed to main thread
 
 
 # ── LightField connection ─────────────────────────────────────────────────────
@@ -59,16 +61,6 @@ def _lf_connect():
     try:
         _auto = Automation(True, List[String]())
         _exp  = _auto.LightFieldApplication.Experiment
-        # Wait for LightField to finish loading before marking as connected
-        for _ in range(60):
-            try:
-                if _exp.IsReadyToRun:
-                    break
-            except Exception:
-                pass
-            time.sleep(1)
-        else:
-            log.warning('LightField did not become ready within 60s — proceeding anyway.')
         _connected = True
         log.info(f"Connected to LightField. Experiment: '{_exp.Name}'")
         return True
@@ -115,7 +107,8 @@ def _ensure_connected():
 
 # ── Acquire ───────────────────────────────────────────────────────────────────
 
-def _acquire():
+def _do_acquire_main_thread():
+    """Called only from the main thread. Returns (data_list, wl_list) or raises."""
     result = {}
     done   = threading.Event()
 
@@ -138,6 +131,16 @@ def _acquire():
         raise RuntimeError(result['error'])
 
     return result['data'], list(_exp.SystemColumnCalibration)
+
+
+def _acquire():
+    """Called from client handler threads. Delegates to main thread via queue."""
+    resp_q = queue.Queue()
+    _acq_queue.put(resp_q)
+    result = resp_q.get(timeout=65)
+    if isinstance(result, Exception):
+        raise result
+    return result
 
 
 # ── Command dispatch ──────────────────────────────────────────────────────────
@@ -193,6 +196,15 @@ def _handle(cmd):
             if g == 150: g = GRATING_150
             elif g == 600: g = GRATING_600
             _exp.SetValue(SpectrometerSettings.GratingSelected, g)
+            # Wait for LightField to finish any hardware moves (e.g. grating change)
+            for _ in range(60):
+                try:
+                    if _exp.IsReadyToRun:
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+            log.info('Setup complete, LightField ready.')
             return {'status': 'ok'}
 
         else:
@@ -247,5 +259,15 @@ if __name__ == '__main__':
     threading.Thread(target=_serve, daemon=True).start()
     with _connect_lock:
         _lf_connect()
+    # Main thread event loop — processes acquisition requests so all
+    # LightField Acquire() calls happen on the thread that owns the Automation object.
     while True:
-        time.sleep(1)
+        try:
+            resp_q = _acq_queue.get(timeout=0.1)
+            try:
+                result = _do_acquire_main_thread()
+                resp_q.put(result)
+            except Exception as e:
+                resp_q.put(e)
+        except queue.Empty:
+            pass
