@@ -50,18 +50,80 @@ SPE_Automation/
 | Filter Rotation Stage (KDC101) | `filter.py` via Thorlabs Kinesis |
 | PicoHarp 300 (g² detector) | PicoHarp software → `.ptu` files → `g2.py` |
 
-## Setup
+## New User Setup
+
+Python and the virtual environment are already installed in shared locations — you do not need to install Python or any packages. Just follow these steps.
+
+### 1. Install VS Code
+
+Download and install from https://code.visualstudio.com if you don't already have it.
+
+### 2. Install the required VS Code extensions
+
+Open VS Code, go to the Extensions panel (`Ctrl+Shift+X`), and install:
+- **Python** (by Microsoft)
+- **Jupyter** (by Microsoft)
+
+### 3. Open the project folder
+
+**File → Open Folder** → navigate to:
+```
+C:\Users\Public\Shared Confocal Files\SPE_Automation
+```
+
+### 4. Select the kernel in the notebook
+
+1. Open `main.ipynb`
+2. Click the kernel picker in the top-right corner (may say "Select Kernel")
+3. Choose **Python Environments...**
+4. Select **`.venv (Python 3.10.0)`**
+
+You're ready to run cells.
+
+---
+
+### Running the notebook
+
+Run cells top-to-bottom at the start of each session:
+
+1. **Imports cell** — loads all modules
+2. **Init cell** — launches MATLAB and connects to the spectrometer. Wait for `Ready for use!` before continuing.
+3. **Remaining cells** — set scan parameters and run as needed.
+
+> If MATLAB is already running from a previous session, use the **Reconnect cell** instead of the init cell.
+
+---
+
+### Troubleshooting
+
+**`.venv` kernel not listed** — click **Select Kernel → Python Environments → Find Python Interpreter** and browse to:
+```
+C:\Users\Public\Shared Confocal Files\SPE_Automation\.venv\Scripts\python.exe
+```
+
+**`EngineError: Unable to connect to MATLAB session`** — the previous MATLAB session was lost. Run the init cell to launch a fresh one.
+
+**`ipykernel not found` or the venv is broken** — rebuild it (admin PowerShell):
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+& "C:\Users\Public\Shared Confocal Files\SPE_Automation\setup_venv.ps1"
+```
+This recreates the venv from `C:\Program Files\Python310\` and reinstalls all packages. If Python 3.10 itself is missing, reinstall it first as Administrator:
+```powershell
+python-3.10.0-amd64.exe /quiet InstallAllUsers=1 PrependPath=1
+```
+
+---
+
+## Developer Setup (rebuilding from scratch)
 
 **Requirements:**
-- Python 3.10+
+- Python 3.10.0 installed for all users at `C:\Program Files\Python310\`
 - MATLAB R2025b with Python engine installed
 - Thorlabs Kinesis installed at `C:\Program Files\Thorlabs\Kinesis`
 - LightField running with a shared MATLAB session
 
-**Python dependencies:**
-```
-pip install numpy matplotlib scipy tqdm PyQt6 pythonnet
-```
+Run `setup_venv.ps1` (as Administrator) to create the venv and install all dependencies from `requirements.txt`.
 
 **Filter calibration** (run once, or when filter is remounted):
 ```bash
