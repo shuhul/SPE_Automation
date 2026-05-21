@@ -38,7 +38,7 @@ def save_plot(foldername, scan_type, data_folder='data'):
         ax_map.set_xlabel('X Position (um)')
         ax_map.set_ylabel('Y Position (um)')
         ax_map.set_title('PL Intensity Map')
-        fig_map.colorbar(im_map, ax=ax_map, label='Summed Intensity')
+        fig_map.colorbar(im_map, ax=ax_map, label='Peak Intensity (>550 nm)')
         
         if classified is not None:
             iys_true, ixs_true = np.where(classified == 1)
@@ -159,7 +159,7 @@ def plot_heatmap(foldername, title='PL Spectrum', xlabel='X Position (um)', ylab
     ax_img.set_title(title)
     ax_img.set_xlabel(xlabel)
     ax_img.set_ylabel(ylabel)
-    fig.colorbar(im, ax=ax_img, label='Summed Intensity')
+    fig.colorbar(im, ax=ax_img, label='Peak Intensity (>550 nm)')
 
     if classified is not None:
         iys, ixs = np.where(classified == 1)
@@ -401,7 +401,7 @@ def plot_heatmap(foldername, title='PL Spectrum', xlabel='X Position (um)', ylab
 #     ax_map.set_xlabel('X Position (um)')
 #     ax_map.set_ylabel('Y Position (um)')
 #     ax_map.set_title('PL Intensity Map')
-#     fig_map.colorbar(im_map, ax=ax_map, label='Summed Intensity')
+#     fig_map.colorbar(im_map, ax=ax_map, label='Peak Intensity (>550 nm)')
 
 #     # Save figure
 #     fig_map.savefig(f'{data_folder}/{foldername}/pl_map.png', dpi=400)
@@ -427,7 +427,7 @@ def plot_heatmap(foldername, title='PL Spectrum', xlabel='X Position (um)', ylab
 #     ax_img.set_title(title)
 #     ax_img.set_xlabel(xlabel)
 #     ax_img.set_ylabel(ylabel)
-#     fig.colorbar(im, ax=ax_img, label='Summed Intensity')
+#     fig.colorbar(im, ax=ax_img, label='Peak Intensity (>550 nm)')
 
 #     if classified is not None:
 #         iys, ixs = np.where(classified == 1)
@@ -631,7 +631,8 @@ def plot_heatmap_manual(foldername, scan_type,
     wl = np.load(os.path.join(base_path, 'wl.npy'))
     xs = np.load(os.path.join(base_path, 'xs.npy'))
     ys = np.load(os.path.join(base_path, 'ys.npy'))
-    summed = np.sum(intensities, axis=-1)
+    emission_mask = wl > 550
+    summed = intensities[:, :, emission_mask].max(axis=-1)
 
     # Safely load classified.npy in case the classifier hasn't run yet
     classified_path = os.path.join(base_path, 'classified.npy')
@@ -733,7 +734,7 @@ def plot_heatmap_manual(foldername, scan_type,
     ax_map.set_xlabel('X Position (um)')
     ax_map.set_ylabel('Y Position (um)')
     ax_map.set_title('PL Intensity Map')
-    fig_map.colorbar(im_map, ax=ax_map, label='Summed Intensity')
+    fig_map.colorbar(im_map, ax=ax_map, label='Peak Intensity (>550 nm)')
 
     fig_map.savefig(os.path.join(base_path, 'pl_map.png'), dpi=400)
     plt.close(fig_map)
@@ -757,7 +758,7 @@ def plot_heatmap_manual(foldername, scan_type,
     ax_img.set_title(title)
     ax_img.set_xlabel(xlabel)
     ax_img.set_ylabel(ylabel)
-    fig.colorbar(im, ax=ax_img, label='Summed Intensity')
+    fig.colorbar(im, ax=ax_img, label='Peak Intensity (>550 nm)')
 
     if classified is not None:
         iys, ixs = np.where(classified == 1)
