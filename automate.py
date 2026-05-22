@@ -17,8 +17,8 @@ import matplotlib.pyplot as plt
 import lf_spec
 import sgd
 import filter as fil
-import classifier
 import plotter
+import pl_spec_python as psp
 
 # ============================================================================
 # PARAMETERS — edit these before each session
@@ -185,80 +185,46 @@ def save_spectrum_plot(folder_path, title=''):
 
 def run_scan(scan_type, center, xdim, ydim, dx, dy, grating, exposure_s, center_wl):
     """
-    Run a spectral scan and save results to DATA_FOLDER/FOLDERNAME/scan_type/.
-    For a single-point scan pass xdim=ydim=dx=dy=0.
-    In REPLAY mode: loads existing data if present, otherwise creates a
-    single-point placeholder so the pipeline can continue without hardware.
-    Returns the folder path.
+    Run a spectral scan via pl_spec_python and save results to
+    DATA_FOLDER/FOLDERNAME/scan_type/. Single-point: xdim=ydim=dx=dy=0.
+    In REPLAY mode: loads existing data if present, otherwise writes a
+    placeholder to a tmp folder so the pipeline can continue without hardware.
+    Returns the folder path where data was saved.
     """
     folder_path = os.path.join(DATA_FOLDER, FOLDERNAME, scan_type)
-    os.makedirs(folder_path, exist_ok=True)
 
-    # REPLAY: use existing data if available, skip all hardware.
-    # Placeholders are written to a separate _replay_tmp folder so real
-    # dataset folders are never modified.
+    # REPLAY: reuse existing data or write a placeholder — never touch hardware
     if REPLAY:
         if os.path.exists(os.path.join(folder_path, 'out.npy')):
             print(f'  [REPLAY] Using existing data in {folder_path}')
             return folder_path
-        else:
-            # No existing data — write placeholder to a tmp path so we don't
-            # pollute the real dataset folder with fake zeros
-            tmp_path = os.path.join(DATA_FOLDER, FOLDERNAME + '_replay_tmp', scan_type)
-            os.makedirs(tmp_path, exist_ok=True)
-            print(f'  [REPLAY] No existing data — placeholder at {center}')
-            wl_fake = np.linspace(415, 980, 1340)
-            xs = np.array([center[0]])
-            ys = np.array([center[1]])
-            np.save(os.path.join(tmp_path, 'out.npy'), np.zeros((1, 1, len(wl_fake))))
-            np.save(os.path.join(tmp_path, 'xs.npy'),  xs)
-            np.save(os.path.join(tmp_path, 'ys.npy'),  ys)
-            np.save(os.path.join(tmp_path, 'wl.npy'),  wl_fake)
-            return tmp_path
+        tmp_path = os.path.join(DATA_FOLDER, FOLDERNAME + '_replay_tmp', scan_type)
+        os.makedirs(tmp_path, exist_ok=True)
+        print(f'  [REPLAY] No existing data — placeholder at {center}')
+        wl_fake = np.linspace(415, 980, 1340)
+        np.save(os.path.join(tmp_path, 'out.npy'), np.zeros((1, 1, len(wl_fake))))
+        np.save(os.path.join(tmp_path, 'xs.npy'),  np.array([center[0]]))
+        np.save(os.path.join(tmp_path, 'ys.npy'),  np.array([center[1]]))
+        np.save(os.path.join(tmp_path, 'wl.npy'),  wl_fake)
+        return tmp_path
 
-    lf_spec.lf_setup(exposure_s=exposure_s, center_wavelength=center_wl, grating=grating)
-
-    wl  = lf_spec.lf_get_wavelengths()
-    num = len(wl)
-
-    # Build scan grid — single point if dimensions are zero
-    if xdim == 0 and ydim == 0:
-        xs = np.array([center[0]])
-        ys = np.array([center[1]])
-    else:
-        xs = np.arange(-xdim/2 + center[0], xdim/2 + dx + center[0], dx)
-        ys = np.arange(-ydim/2 + center[1], ydim/2 + dy + center[1], dy)
-
-    output = np.zeros((len(ys), len(xs), num))
-    total  = len(ys) * len(xs)
-    done   = 0
-
-    sgd.sgd_on()
+    # Live hardware — delegate entirely to pl_spec_python
     try:
-        for iy, y in enumerate(ys):
-            for ix, x in enumerate(xs):
-                if _stop:
-                    break
-                sgd.set_position(x, y, silent=True)
-                intensity, wl_acq = lf_spec.lf_acquire()
-                intensity = np.array(intensity)
-                if len(intensity) != num:
-                    intensity = np.resize(intensity, num)
-                output[iy, ix, :] = intensity
-                wl   = wl_acq
-                done += 1
-                print(f'  [{done}/{total}] x={x:.2f}, y={y:.2f}', end='\r')
-            if _stop:
-                break
-    finally:
-        sgd.sgd_off()
-
-    print()
-
-    np.save(os.path.join(folder_path, 'out.npy'), output)
-    np.save(os.path.join(folder_path, 'xs.npy'),  xs)
-    np.save(os.path.join(folder_path, 'ys.npy'),  ys)
-    np.save(os.path.join(folder_path, 'wl.npy'),  wl)
+        psp.pl_spec_lf(
+            xdim=xdim, ydim=ydim, dx=dx, dy=dy,
+            center=center,
+            grating=grating,
+            exposure_time=exposure_s,
+            center_wavelength=center_wl,
+            foldername=FOLDERNAME,
+            current_user=CURRENT_USER,
+            scan_type=scan_type,
+            data_folder=DATA_FOLDER,
+        )
+    except KeyboardInterrupt:
+        global _stop
+        _stop = True
+        print('\nScan interrupted.')
 
     return folder_path
 
@@ -366,7 +332,6 @@ def main():
         print('Stopped.')
         return
 
-    classifier.classify_all(FOLDERNAME, 'coarse', data_folder=DATA_FOLDER)
     plotter.plot_heatmap_manual(FOLDERNAME, 'coarse', data_folder=DATA_FOLDER)
 
     # Load coarse results — keep out/wl in memory for ZPL estimates later
@@ -410,7 +375,6 @@ def main():
         if _stop:
             break
 
-        classifier.classify_all(FOLDERNAME, fine_type, data_folder=DATA_FOLDER)
         plotter.plot_heatmap_manual(FOLDERNAME, fine_type, data_folder=DATA_FOLDER)
 
         # Pick the target position: brightest classified pixel, else brightest overall
