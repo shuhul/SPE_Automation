@@ -5,13 +5,17 @@ G2 measurement is not included yet.
 Stop with Ctrl+C — the current acquisition finishes cleanly before exiting.
 """
 
+# Set True to open a live heatmap window after each scan; False to run silently (data and PNGs still saved).
+PLOT_INTERACTIVE = True
+
 import os
 import signal
 import numpy as np
 from datetime import datetime
 
 import matplotlib
-matplotlib.use('Agg')   # file-only backend — no interactive windows in script mode
+if not PLOT_INTERACTIVE:
+    matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import lf_spec
@@ -24,29 +28,29 @@ import pl_spec_python as psp
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-test'
-CURRENT_USER = 'shuhul'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-plasma+anneal-Ch4-500uW-2s-fullauto-1'
+CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-04-07_14-48-20'   # bandpass calibration subfolder name
 
 # Coarse scan — wide area to locate candidate emitters
-COARSE_XDIM       = 10.0   # um
-COARSE_YDIM       = 10.0   # um
+COARSE_XDIM       = 20.0   # um
+COARSE_YDIM       = 20.0   # um
 COARSE_DX         = 0.5    # um step size
 COARSE_DY         = 0.5
 COARSE_CENTER     = (0.0, 0.0)
 COARSE_GRATING    = 150
-COARSE_EXPOSURE_S = 1.0
+COARSE_EXPOSURE_S = 2.0
 COARSE_CENTER_WL  = 700    # nm
 
 # Fine scan — zoomed scan centred on each classified emitter
-FINE_XDIM         = 0.5
-FINE_YDIM         = 0.5
+FINE_XDIM         = 3.0
+FINE_YDIM         = 3.0
 FINE_DX           = 0.25
 FINE_DY           = 0.25
-FINE_GRATING      = 150
+FINE_GRATING      = 600
 FINE_EXPOSURE_S   = 1.0
-FINE_CENTER_WL    = 700
+FINE_CENTER_WL    = 595
 
 # Long scan — single-point, high-exposure spectrum to measure ZPL precisely
 LONG_GRATING      = 600
@@ -118,6 +122,9 @@ def _angle_for_wavelength(target_wl):
     if not valid.any():
         return None
     angles, wls = table[valid, 0], table[valid, 1]
+    # NOTE if statement added to allow wrapping of angles
+    if angles>360:
+        angles-=360
     return float(angles[np.argmin(np.abs(wls - target_wl))])
 
 
@@ -239,6 +246,7 @@ def run_bandpass_setup(target_wl):
     outside BANDPASS_TOLERANCE_NM. Flips filter back out on failure.
     Returns True if aligned, False otherwise.
     """
+    #NOTE filter did not flip down on error
     angle = _angle_for_wavelength(target_wl)
     if angle is None:
         print(f'  No calibration data for {target_wl:.1f} nm — skipping filter.')
@@ -274,7 +282,7 @@ def run_bandpass_setup(target_wl):
         if measured_wl is None:
             print('  No emission peak detected through filter.')
             break
-
+        # NOTE error might be skewed by emission from PBS if wl is over estimated
         error = target_wl - measured_wl
         print(f'  Target: {target_wl:.1f} nm  Measured: {measured_wl:.1f} nm  Error: {error:+.1f} nm')
 
@@ -285,6 +293,9 @@ def run_bandpass_setup(target_wl):
         if slope is not None:
             correction = error * slope
             angle     += correction
+            # NOTE if statement added to allow wrapping of angles
+            if angle>360:
+                angle-=360
             print(f'  Correction: {correction:+.2f} deg  new target: {angle:.2f} deg')
         else:
             print('  No slope data — cannot correct angle.')
@@ -332,7 +343,9 @@ def main():
         print('Stopped.')
         return
 
-    plotter.plot_heatmap_manual(FOLDERNAME, 'coarse', data_folder=DATA_FOLDER)
+    if PLOT_INTERACTIVE:
+        psp._send_telegram(CURRENT_USER, f"Interactive plot opened. Close to continue scan.")
+        plotter.open_heatmap(FOLDERNAME, 'coarse', data_folder=DATA_FOLDER)
 
     # Load coarse results — keep out/wl in memory for ZPL estimates later
     coarse_path = os.path.join(DATA_FOLDER, FOLDERNAME, 'coarse')
@@ -375,7 +388,8 @@ def main():
         if _stop:
             break
 
-        plotter.plot_heatmap_manual(FOLDERNAME, fine_type, data_folder=DATA_FOLDER)
+        if PLOT_INTERACTIVE:
+            plotter.open_heatmap(FOLDERNAME, fine_type, data_folder=DATA_FOLDER)
 
         # Pick the target position: brightest classified pixel, else brightest overall
         fine_path = os.path.join(DATA_FOLDER, FOLDERNAME, fine_type)
@@ -414,12 +428,12 @@ def main():
         ix_near    = int(np.argmin(np.abs(xs_c - ex)))
         iy_near    = int(np.argmin(np.abs(ys_c - ey)))
         coarse_zpl = find_emission_fwhm_center(coarse_out[iy_near, ix_near, :], coarse_wl)
-
+        # NOTE: most likely redundant if statement
         if coarse_zpl is not None:
-            long_center_wl = int((532 + coarse_zpl) / 2)
+            long_center_wl = 595 #int((532 + coarse_zpl) / 2)
             print(f'  Coarse ZPL estimate: {coarse_zpl:.1f} nm  long center WL: {long_center_wl} nm')
         else:
-            long_center_wl = 700
+            long_center_wl = 595
             print(f'  Could not estimate ZPL from coarse — using {long_center_wl} nm')
 
         print(f'[STEP 2b] Long scan  ({LONG_EXPOSURE_S}s, 600 g/mm)...')

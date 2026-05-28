@@ -307,7 +307,7 @@ def plot_heatmap(foldername, title='PL Spectrum', xlabel='X Position (um)', ylab
     fig.canvas.mpl_connect("key_press_event", on_key)
 
     plt.tight_layout()
-    plt.show()
+    plt.show(block=True)
 
 
 
@@ -631,8 +631,7 @@ def plot_heatmap_manual(foldername, scan_type,
     wl = np.load(os.path.join(base_path, 'wl.npy'))
     xs = np.load(os.path.join(base_path, 'xs.npy'))
     ys = np.load(os.path.join(base_path, 'ys.npy'))
-    emission_mask = wl > 550
-    summed = intensities[:, :, emission_mask].max(axis=-1)
+    summed = intensities.sum(axis=-1)
 
     # Safely load classified.npy in case the classifier hasn't run yet
     classified_path = os.path.join(base_path, 'classified.npy')
@@ -941,4 +940,17 @@ def plot_heatmap_manual(foldername, scan_type,
     fig.canvas.mpl_connect("key_press_event", on_key)
 
     plt.tight_layout()
-    plt.show()
+    plt.show(block=True)
+
+
+def open_heatmap(foldername, scan_type, data_folder='data', **kwargs):
+    """Like plot_heatmap_manual but forces an interactive window even from scripts.
+    Temporarily switches away from Agg if needed."""
+    import matplotlib
+    backend = matplotlib.get_backend()
+    if backend.lower() == 'agg':
+        try:
+            plt.switch_backend('QtAgg')
+        except Exception:
+            plt.switch_backend('TkAgg')
+    plot_heatmap_manual(foldername, scan_type, data_folder=data_folder, **kwargs)
