@@ -7,9 +7,8 @@ from datetime import datetime
 t_start = time.time()
 
 # Import your custom modules
-import pl_init
+import lf_spec
 import filter
-import pl_spec
 
 # --- 1. Configuration ---
 exposure_time = 1  # seconds
@@ -31,14 +30,12 @@ print(f"Data will be saved to: {save_dir}")
 
 # --- 3. Initialization ---
 print("Initializing hardware...")
-pl_init.pl_init()
+lf_spec.lf_connect()
+lf_spec.lf_setup(exposure_s=exposure_time)
 filter.filter_init()
-filter.filter_on()  
+filter.filter_on()
 filter.flip_up()
 filter.rotation_home()
-
-pl_spec.connect_matlab()
-pl_spec.pl_set_settings(exposure_time=exposure_time)
 
 # --- 4. Calculate Angles ---
 total_sweep = (360 - start_angle) + stop_angle
@@ -63,7 +60,9 @@ for current_angle in continuous_angles:
     time.sleep(0.1) # Settling time
     
     # Acquire Spectrum
-    intensity, wl = pl_spec.pl_single_scan()
+    intensity_raw, wl_raw = lf_spec.lf_acquire()
+    intensity = np.array(intensity_raw).flatten()
+    wl = np.array(wl_raw).flatten()
     
     # Store the raw spectrum for this angle
     calibration_data.append(intensity)

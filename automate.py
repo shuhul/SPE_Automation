@@ -59,10 +59,6 @@ FINE_CENTER_WL    = 595
 LONG_GRATING      = 600
 LONG_EXPOSURE_S   = 10.0
 
-# Bandpass filter alignment
-BANDPASS_TOLERANCE_NM = 2.0
-BANDPASS_MAX_ATTEMPTS = 3
-
 
 # ============================================================================
 # STOP FLAG — set by Ctrl+C, checked between acquisitions
@@ -120,40 +116,8 @@ def _angle_for_wavelength(target_wl):
     if not valid.any():
         return None
     angles, wls = table[valid, 0], table[valid, 1]
-    # NOTE if statement added to allow wrapping of angles
-    if angles>360:
-        angles-=360
     return float(angles[np.argmin(np.abs(wls - target_wl))])
 
-
-def _bandpass_slope(target_wl, angle_window=30.0):
-    """Estimate dangle/dwl (deg/nm) near target_wl from the calibration table.
-    Filters to entries within angle_window degrees to exclude spurious points."""
-    table_path = os.path.join('calibration', CAL_FOLDER, 'calibration_table.npy')
-    if not os.path.exists(table_path):
-        return None
-    table = np.load(table_path)
-    valid = ~np.isnan(table[:, 1])
-    if valid.sum() < 2:
-        return None
-    angles, wls = table[valid, 0], table[valid, 1]
-
-    expected_angle = float(angles[np.argmin(np.abs(wls - target_wl))])
-    angle_diff     = np.abs(((angles - expected_angle) + 180) % 360 - 180)
-    clean          = angle_diff <= angle_window
-    if clean.sum() < 2:
-        return None
-    angles, wls = angles[clean], wls[clean]
-
-    order        = np.argsort(wls)
-    angles, wls  = angles[order], wls[order]
-    idx          = int(np.argmin(np.abs(wls - target_wl)))
-    i0, i1       = max(0, idx - 1), min(len(wls) - 1, idx + 1)
-    dwl          = wls[i1] - wls[i0]
-    if dwl == 0:
-        return None
-    dangle = (angles[i1] - angles[i0] + 180) % 360 - 180
-    return float(dangle / dwl)
 
 # ============================================================================
 # PLOTTING
@@ -217,71 +181,6 @@ def run_scan(scan_type, center, xdim, ydim, dx, dy, grating, exposure_s, center_
     return folder_path
 
 # ============================================================================
-# BANDPASS FILTER SETUP
-# ============================================================================
-
-def run_bandpass_setup(target_wl):
-    """
-    Insert the bandpass filter, rotate to target_wl, and verify with a single
-    acquisition. Uses proportional angle correction if the measured peak is
-    outside BANDPASS_TOLERANCE_NM. Flips filter back out on failure.
-    Returns True if aligned, False otherwise.
-    """
-    #NOTE filter did not flip down on error
-    angle = _angle_for_wavelength(target_wl)
-    if angle is None:
-        print(f'  No calibration data for {target_wl:.1f} nm — skipping filter.')
-        return False
-
-    slope = _bandpass_slope(target_wl)  # deg/nm, used for correction
-
-    # Use long-scan settings so the ZPL is visible through the filter
-    lf_spec.lf_setup(
-        exposure_s=LONG_EXPOSURE_S,
-        center_wavelength=int(target_wl),
-        grating=LONG_GRATING,
-    )
-
-    fil.flip_up()  # insert filter into beam
-
-    for attempt in range(BANDPASS_MAX_ATTEMPTS):
-        print(f'  Attempt {attempt+1}/{BANDPASS_MAX_ATTEMPTS}: rotating to {angle:.2f} deg...')
-        fil.rotation_move(angle)
-
-        intensity, wl = lf_spec.lf_acquire()
-        measured_wl   = find_emission_fwhm_center(
-            np.array(intensity).flatten(),
-            np.array(wl).flatten(),
-        )
-
-        if measured_wl is None:
-            print('  No emission peak detected through filter.')
-            break
-        # NOTE error might be skewed by emission from PBS if wl is over estimated
-        error = target_wl - measured_wl
-        print(f'  Target: {target_wl:.1f} nm  Measured: {measured_wl:.1f} nm  Error: {error:+.1f} nm')
-
-        if abs(error) <= BANDPASS_TOLERANCE_NM:
-            print('  Bandpass aligned.')
-            return True
-
-        if slope is not None:
-            correction = error * slope
-            angle     += correction
-            # NOTE if statement added to allow wrapping of angles
-            if angle>360:
-                angle-=360
-            print(f'  Correction: {correction:+.2f} deg  new target: {angle:.2f} deg')
-        else:
-            print('  No slope data — cannot correct angle.')
-            break
-
-    # Alignment failed — remove filter so the next emitter is not obscured
-    print(f'  Bandpass alignment failed after {BANDPASS_MAX_ATTEMPTS} attempts.')
-    fil.flip_down()
-    return False
-
-# ============================================================================
 # MAIN PIPELINE
 # ============================================================================
 
@@ -318,8 +217,6 @@ def main():
     # Load coarse results — keep out/wl in memory for ZPL estimates later
     coarse_path = os.path.join(DATA_FOLDER, FOLDERNAME, 'coarse')
     classified  = np.load(os.path.join(coarse_path, 'classified.npy'))
-    coarse_out  = np.load(os.path.join(coarse_path, 'out.npy'))
-    coarse_wl   = np.load(os.path.join(coarse_path, 'wl.npy'))
     xs_c        = np.load(os.path.join(coarse_path, 'xs.npy'))
     ys_c        = np.load(os.path.join(coarse_path, 'ys.npy'))
 
@@ -394,21 +291,9 @@ def main():
 
         # ── STEP 2b: LONG SCAN ────────────────────────────────────────────────
         # Single-point, high-exposure spectrum at the brightest spot.
-        # The center wavelength is derived from the coarse ZPL estimate so that
-        # both the 532 nm laser line and the emission fit in the 600 g/mm window.
         long_type = f'long_x{tx:.1f}_y{ty:.1f}'
 
-        ix_near    = int(np.argmin(np.abs(xs_c - ex)))
-        iy_near    = int(np.argmin(np.abs(ys_c - ey)))
-        coarse_zpl = find_emission_fwhm_center(coarse_out[iy_near, ix_near, :], coarse_wl)
-        # NOTE: most likely redundant if statement
-        if coarse_zpl is not None:
-            long_center_wl = 595 #int((532 + coarse_zpl) / 2)
-            print(f'  Coarse ZPL estimate: {coarse_zpl:.1f} nm  long center WL: {long_center_wl} nm')
-        else:
-            long_center_wl = 595
-            print(f'  Could not estimate ZPL from coarse — using {long_center_wl} nm')
-
+        long_center_wl = 595
         print(f'[STEP 2b] Long scan  ({LONG_EXPOSURE_S}s, 600 g/mm)...')
         run_scan(
             scan_type=long_type,
@@ -436,16 +321,39 @@ def main():
             continue
 
         angle = _angle_for_wavelength(target_wl)
-        print(f'[STEP 2c] ZPL FWHM centre: {target_wl:.1f} nm — aligning bandpass filter...')
-        aligned = run_bandpass_setup(target_wl)
-        results.append((ex, ey, tx, ty, target_wl, angle, 'aligned' if aligned else 'failed'))
+        print(f'[STEP 2c] ZPL FWHM centre: {target_wl:.1f} nm — setting bandpass filter...')
+        if angle is None:
+            print(f'  No calibration data for {target_wl:.1f} nm — skipping filter.')
+            results.append((ex, ey, tx, ty, target_wl, None, 'no cal'))
+            continue
+        fil.flip_up()
+        fil.rotation_move(angle)
+        print(f'  Filter set to {angle:.1f} deg.')
 
-        if aligned:
-            # G2 measurement would run here
-            print('  Filter aligned. G2 measurement skipped (not implemented yet).')
-            fil.flip_down()  # remove filter before moving to next emitter
-        else:
-            print('  Moving to next emitter.')
+        filter_long_type = f'long_filter_x{tx:.1f}_y{ty:.1f}'
+        print(f'[STEP 2d] Long scan through filter ({LONG_EXPOSURE_S}s, 600 g/mm)...')
+        run_scan(
+            scan_type=filter_long_type,
+            center=(tx, ty),
+            xdim=0, ydim=0, dx=0, dy=0,
+            grating=LONG_GRATING,
+            exposure_s=LONG_EXPOSURE_S,
+            center_wl=long_center_wl,
+        )
+        filter_long_path = os.path.join(DATA_FOLDER, FOLDERNAME, filter_long_type)
+        save_spectrum_plot(filter_long_path, title=f'Filter scan ({tx:.2f}, {ty:.2f})')
+        if MANUAL_PLOT_INTERACTION:
+            plotter.open_heatmap(FOLDERNAME, filter_long_type, data_folder=DATA_FOLDER)
+        if _stop:
+            fil.flip_down()
+            break
+
+        results.append((ex, ey, tx, ty, target_wl, angle, 'filter set'))
+        # G2 measurement would run here
+        print('  G2 measurement skipped (not implemented yet).')
+        fil.flip_down()
+
+    fil.filter_off()
 
     # ── SUMMARY TABLE ─────────────────────────────────────────────────────────
     print('\n=== Results Summary ===')

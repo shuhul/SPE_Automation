@@ -3,9 +3,8 @@ import os
 import numpy as np
 
 # Import your custom modules
-import pl_init
+import lf_spec
 import filter
-import pl_spec
 
 # --- 1. Configuration ---
 # Set these two strings to control the test
@@ -48,13 +47,12 @@ if np.isnan(expected_wl):
 
 # --- 3. Hardware Initialization ---
 print(f"Initializing hardware to check {TEST_ANGLE}°...")
-pl_init.pl_init()
+lf_spec.lf_connect()
+lf_spec.lf_setup(exposure_s=exposure_time)
 filter.filter_init()
-filter.filter_on()  
+filter.filter_on()
 filter.flip_up()
 filter.rotation_home()
-pl_spec.connect_matlab()
-pl_spec.pl_set_settings(exposure_time=exposure_time)
 
 # --- 4. Execution ---
 print(f"Moving to {TEST_ANGLE}°...")
@@ -62,7 +60,9 @@ filter.rotation_move(TEST_ANGLE)
 time.sleep(0.5) # Extra settling time for a single check
 
 # Acquire Spectrum
-intensity, wl = pl_spec.pl_single_scan()
+intensity_raw, wl_raw = lf_spec.lf_acquire()
+intensity = np.array(intensity_raw).flatten()
+wl = np.array(wl_raw).flatten()
 
 # Process Spectrum using the Threshold Edge Method
 window_mask = (wl >= wl_min) & (wl <= wl_max)
