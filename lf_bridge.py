@@ -99,6 +99,13 @@ signal.signal(signal.SIGINT,  _signal_handler)
 
 
 def _ensure_connected():
+    global _connected
+    if _connected:
+        try:
+            _ = _exp.IsReadyToRun   # lightweight IPC check — throws if LF is gone
+        except Exception:
+            _connected = False
+            log.warning('LightField IPC dropped — attempting auto-reconnect...')
     if _connected:
         return True
     with _connect_lock:

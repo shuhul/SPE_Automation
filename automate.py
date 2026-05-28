@@ -5,8 +5,11 @@ G2 measurement is not included yet.
 Stop with Ctrl+C — the current acquisition finishes cleanly before exiting.
 """
 
-# Set True to open a live heatmap window after each scan; False to run silently (data and PNGs still saved).
-PLOT_INTERACTIVE = True
+# Set True to open a live heatmap window after each scan; 
+# False to run silently (data and PNGs still saved).
+# IF TRUE THEN MANUAL INTERACTION IS REQUIRED
+MANUAL_PLOT_INTERACTION = True
+
 
 import os
 import signal
@@ -14,7 +17,7 @@ import numpy as np
 from datetime import datetime
 
 import matplotlib
-if not PLOT_INTERACTIVE:
+if not MANUAL_PLOT_INTERACTION:
     matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
@@ -34,8 +37,8 @@ DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-04-07_14-48-20'   # bandpass calibration subfolder name
 
 # Coarse scan — wide area to locate candidate emitters
-COARSE_XDIM       = 20.0   # um
-COARSE_YDIM       = 20.0   # um
+COARSE_XDIM       = 2   # um
+COARSE_YDIM       = 2   # um
 COARSE_DX         = 0.5    # um step size
 COARSE_DY         = 0.5
 COARSE_CENTER     = (0.0, 0.0)
@@ -44,10 +47,10 @@ COARSE_EXPOSURE_S = 2.0
 COARSE_CENTER_WL  = 700    # nm
 
 # Fine scan — zoomed scan centred on each classified emitter
-FINE_XDIM         = 3.0
-FINE_YDIM         = 3.0
-FINE_DX           = 0.25
-FINE_DY           = 0.25
+FINE_XDIM         = 1 # 3.0
+FINE_YDIM         = 1 # 3.0
+FINE_DX           = 0.5 # 0.25
+FINE_DY           = 0.5 # 0.25
 FINE_GRATING      = 600
 FINE_EXPOSURE_S   = 1.0
 FINE_CENTER_WL    = 595
@@ -60,11 +63,6 @@ LONG_EXPOSURE_S   = 10.0
 BANDPASS_TOLERANCE_NM = 2.0
 BANDPASS_MAX_ATTEMPTS = 3
 
-# Replay mode — set to True to run the full pipeline on existing data without hardware.
-# Point FOLDERNAME at a past dataset folder. Scans that already have out.npy are loaded
-# directly; scans with no existing data get a single-point placeholder so the pipeline
-# can still run. Hardware init and bandpass motor moves are skipped entirely.
-REPLAY = False
 
 # ============================================================================
 # STOP FLAG — set by Ctrl+C, checked between acquisitions
@@ -194,26 +192,9 @@ def run_scan(scan_type, center, xdim, ydim, dx, dy, grating, exposure_s, center_
     """
     Run a spectral scan via pl_spec_python and save results to
     DATA_FOLDER/FOLDERNAME/scan_type/. Single-point: xdim=ydim=dx=dy=0.
-    In REPLAY mode: loads existing data if present, otherwise writes a
-    placeholder to a tmp folder so the pipeline can continue without hardware.
     Returns the folder path where data was saved.
     """
     folder_path = os.path.join(DATA_FOLDER, FOLDERNAME, scan_type)
-
-    # REPLAY: reuse existing data or write a placeholder — never touch hardware
-    if REPLAY:
-        if os.path.exists(os.path.join(folder_path, 'out.npy')):
-            print(f'  [REPLAY] Using existing data in {folder_path}')
-            return folder_path
-        tmp_path = os.path.join(DATA_FOLDER, FOLDERNAME + '_replay_tmp', scan_type)
-        os.makedirs(tmp_path, exist_ok=True)
-        print(f'  [REPLAY] No existing data — placeholder at {center}')
-        wl_fake = np.linspace(415, 980, 1340)
-        np.save(os.path.join(tmp_path, 'out.npy'), np.zeros((1, 1, len(wl_fake))))
-        np.save(os.path.join(tmp_path, 'xs.npy'),  np.array([center[0]]))
-        np.save(os.path.join(tmp_path, 'ys.npy'),  np.array([center[1]]))
-        np.save(os.path.join(tmp_path, 'wl.npy'),  wl_fake)
-        return tmp_path
 
     # Live hardware — delegate entirely to pl_spec_python
     try:
@@ -253,12 +234,6 @@ def run_bandpass_setup(target_wl):
         return False
 
     slope = _bandpass_slope(target_wl)  # deg/nm, used for correction
-
-    # REPLAY: skip all hardware, just verify the calibration lookup works
-    if REPLAY:
-        print(f'  [REPLAY] Would rotate to {angle:.2f} deg  slope: {slope}')
-        print('  [REPLAY] Bandpass skipped — simulating success.')
-        return True
 
     # Use long-scan settings so the ZPL is visible through the filter
     lf_spec.lf_setup(
@@ -317,15 +292,12 @@ def main():
     print()
 
     # ── Hardware init ─────────────────────────────────────────────────────────
-    if REPLAY:
-        print('[REPLAY MODE] Hardware init skipped.\n')
-    else:
-        print('Initializing hardware...')
-        lf_spec.lf_connect()
-        sgd.sgd_init()
-        fil.filter_init()
-        fil.filter_on()
-        print()
+    print('Initializing hardware...')
+    lf_spec.lf_connect()
+    sgd.sgd_init()
+    fil.filter_init()
+    fil.filter_on()
+    print()
 
     # ── STEP 1: COARSE SCAN ───────────────────────────────────────────────────
     # Scans the full area to find candidate emitter positions.
@@ -343,10 +315,6 @@ def main():
         print('Stopped.')
         return
 
-    if PLOT_INTERACTIVE:
-        psp._send_telegram(CURRENT_USER, f"Interactive plot opened. Close to continue scan.")
-        plotter.open_heatmap(FOLDERNAME, 'coarse', data_folder=DATA_FOLDER)
-
     # Load coarse results — keep out/wl in memory for ZPL estimates later
     coarse_path = os.path.join(DATA_FOLDER, FOLDERNAME, 'coarse')
     classified  = np.load(os.path.join(coarse_path, 'classified.npy'))
@@ -355,13 +323,18 @@ def main():
     xs_c        = np.load(os.path.join(coarse_path, 'xs.npy'))
     ys_c        = np.load(os.path.join(coarse_path, 'ys.npy'))
 
-    iys, ixs = np.where(classified == 1)
-    if len(ixs) == 0:
-        print('No emitters found in coarse scan. Done.')
+    if MANUAL_PLOT_INTERACTION:
+        psp._send_telegram(CURRENT_USER, 'Coarse scan done. Select emitters and close the plot to continue.')
+        emitters = plotter.select_emitters(FOLDERNAME, 'coarse', data_folder=DATA_FOLDER)
+    else:
+        iys, ixs = np.where(classified == 1)
+        emitters = [(xs_c[ix], ys_c[iy]) for ix, iy in zip(ixs, iys)]
+
+    if len(emitters) == 0:
+        print('No emitters found/selected in coarse scan. Done.')
         return
 
-    emitters = [(xs_c[ix], ys_c[iy]) for ix, iy in zip(ixs, iys)]
-    print(f'Found {len(emitters)} emitter(s): {[(f"{x:.2f}", f"{y:.2f}") for x, y in emitters]}')
+    print(f'Running fine scans on {len(emitters)} emitter(s): {[(f"{x:.2f}", f"{y:.2f}") for x, y in emitters]}')
 
     # ── STEP 2: PER-EMITTER LOOP ──────────────────────────────────────────────
     results = []   # collect (emitter_xy, target_pos, zpl_wl, bandpass_angle) for summary
@@ -388,7 +361,7 @@ def main():
         if _stop:
             break
 
-        if PLOT_INTERACTIVE:
+        if MANUAL_PLOT_INTERACTION:
             plotter.open_heatmap(FOLDERNAME, fine_type, data_folder=DATA_FOLDER)
 
         # Pick the target position: brightest classified pixel, else brightest overall
@@ -470,8 +443,7 @@ def main():
         if aligned:
             # G2 measurement would run here
             print('  Filter aligned. G2 measurement skipped (not implemented yet).')
-            if not REPLAY:
-                fil.flip_down()  # remove filter before moving to next emitter
+            fil.flip_down()  # remove filter before moving to next emitter
         else:
             print('  Moving to next emitter.')
 

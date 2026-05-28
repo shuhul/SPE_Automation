@@ -1,9 +1,12 @@
+import os
 import plotter
 
-FOLDERNAME  = '20260526-PLSPC-test'
 DATA_FOLDER = 'data'
 
-plotter.open_heatmap(FOLDERNAME, 'coarse', data_folder=DATA_FOLDER)
+folders = [f for f in os.scandir(DATA_FOLDER) if f.is_dir()]
+latest = max(folders, key=lambda f: f.stat().st_mtime)
+foldername = latest.name
+print(f'Opening: {foldername}')
 
-
-print('done')
+result = plotter.select_emitters(foldername, 'coarse', data_folder=DATA_FOLDER)
+print(f'Selected emitters: {result}')

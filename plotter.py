@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import os
+import classifier
 
 def edges_from_centers(coords):
     diffs = np.diff(coords) / 2
@@ -637,33 +638,6 @@ def plot_heatmap_manual(foldername, scan_type,
     classified_path = os.path.join(base_path, 'classified.npy')
     classified = np.load(classified_path) if os.path.exists(classified_path) else None
 
-    # Helper function to find non-laser peak and FWHM
-    def get_peak_info(wls, spec):
-        # Mask out the 532nm laser (ignoring 520nm to 545nm)
-        valid_idx = np.where((wls < 520) | (wls > 545))[0]
-        if len(valid_idx) == 0: 
-            return None
-        
-        # Find peak
-        peak_idx = valid_idx[np.argmax(spec[valid_idx])]
-        peak_wl = wls[peak_idx]
-        peak_int = spec[peak_idx]
-        
-        # Calculate FWHM
-        half_max = peak_int / 2
-        
-        # Find left crossing
-        left_idx = peak_idx
-        while left_idx > 0 and spec[left_idx] > half_max:
-            left_idx -= 1
-            
-        # Find right crossing
-        right_idx = peak_idx
-        while right_idx < len(spec) - 1 and spec[right_idx] > half_max:
-            right_idx += 1
-            
-        fwhm = wls[right_idx] - wls[left_idx]
-        return peak_wl, peak_int, wls[left_idx], wls[right_idx], fwhm
 
     # --- 2. Generate Detection Plots (Autoscaled with Peak Info) ---
     if classified is not None:
@@ -683,7 +657,7 @@ def plot_heatmap_manual(foldername, scan_type,
             ax_temp.plot(wl, spec_data, lw=2)
             
             # Add Peak Lines and Text
-            res = get_peak_info(wl, spec_data)
+            res = classifier.get_peak_annotation(spec_data, wl)
             if res:
                 p_wl, p_int, l_wl, r_wl, fwhm = res
                 ax_temp.axvline(p_wl, color='red', linestyle='--', alpha=0.7)
@@ -810,7 +784,7 @@ def plot_heatmap_manual(foldername, scan_type,
             # Handle Peak and FWHM Drawing
             is_class1 = (classified is not None) and (classified[self.iy, self.ix] == 1)
             if is_class1:
-                res = get_peak_info(wl, spectrum)
+                res = classifier.get_peak_annotation(spectrum, wl)
                 if res:
                     p_wl, p_int, l_wl, r_wl, fwhm = res
                     peak_vline.set_xdata([p_wl, p_wl])
@@ -941,6 +915,306 @@ def plot_heatmap_manual(foldername, scan_type,
 
     plt.tight_layout()
     plt.show(block=True)
+
+
+def select_emitters(foldername, scan_type,
+                    title='PL Spectrum',
+                    xlabel='X Position (um)', ylabel='Y Position (um)',
+                    heatmap_cmap='viridis', data_folder='data', slideshow_interval=0.5):
+    """Interactive heatmap for selecting which classified emitters to fine-scan.
+    Identical to plot_heatmap_manual but right-click toggles emitter circles
+    between Selected (red) and Ignored (gray). Close the window to confirm.
+    Returns list of (x, y) tuples for selected emitters."""
+    import matplotlib
+    from matplotlib.lines import Line2D
+    if matplotlib.get_backend().lower() == 'agg':
+        try:
+            plt.switch_backend('QtAgg')
+        except Exception:
+            plt.switch_backend('TkAgg')
+
+    # --- Check if file exists to prevent immediate crash ---
+    base_path = os.path.join(data_folder, foldername, scan_type)
+    if not os.path.exists(os.path.join(base_path, 'out.npy')):
+        print(f"Error: Could not find {base_path}/out.npy")
+        return []
+
+    # --- 1. Load Data ---
+    intensities = np.load(os.path.join(base_path, 'out.npy'))
+    wl  = np.load(os.path.join(base_path, 'wl.npy'))
+    xs  = np.load(os.path.join(base_path, 'xs.npy'))
+    ys  = np.load(os.path.join(base_path, 'ys.npy'))
+    summed = intensities.sum(axis=-1)
+
+    classified_path = os.path.join(base_path, 'classified.npy')
+    classified = np.load(classified_path) if os.path.exists(classified_path) else None
+
+
+    # --- 2. Generate Detection Plots ---
+    if classified is not None:
+        save_dir = os.path.join(base_path, 'detection_plots')
+        os.makedirs(save_dir, exist_ok=True)
+        iys_true, ixs_true = np.where(classified == 1)
+        plt.ioff()
+        for iy, ix in zip(iys_true, ixs_true):
+            x_pos = xs[ix]
+            y_pos = ys[iy]
+            spec_data = intensities[iy, ix, :]
+            fig_temp, ax_temp = plt.subplots(figsize=(6, 6))
+            ax_temp.plot(wl, spec_data, lw=2)
+            res = classifier.get_peak_annotation(spec_data, wl)
+            if res:
+                p_wl, p_int, l_wl, r_wl, fwhm = res
+                ax_temp.axvline(p_wl, color='red', linestyle='--', alpha=0.7)
+                ax_temp.plot([l_wl, r_wl], [p_int/2, p_int/2], color='orange', lw=2)
+                ax_temp.text(0.95, 0.85, f"Center: {p_wl:.1f} nm\nFWHM: {fwhm:.1f} nm",
+                             transform=ax_temp.transAxes, ha='right', va='top',
+                             bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
+            ax_temp.set_xlabel('Wavelength')
+            ax_temp.set_ylabel('Intensity')
+            ax_temp.set_title(f'Spectrum at x={x_pos:.2f}, y={y_pos:.2f}')
+            local_min = np.min(spec_data)
+            local_max = np.max(spec_data)
+            padding = (local_max - local_min) * 0.1 if local_max != local_min else 1.0
+            ax_temp.set_ylim(local_min - padding, local_max + padding)
+            ax_temp.set_xlim(np.min(wl), np.max(wl))
+            plt.tight_layout()
+            fig_temp.savefig(os.path.join(save_dir, f"spec_plot_x={x_pos:.2f}_y={y_pos:.2f}.png"), dpi=400)
+            plt.close(fig_temp)
+        plt.ion()
+
+    # --- 3. Setup Geometry ---
+    def edges_from_centers(coords):
+        if len(coords) < 2:
+            return np.array([coords[0] - 0.5, coords[0] + 0.5])
+        diffs = np.diff(coords) / 2
+        return np.concatenate(([coords[0] - diffs[0]], coords[:-1] + diffs, [coords[-1] + diffs[-1]]))
+
+    x_edges = edges_from_centers(xs)
+    y_edges = edges_from_centers(ys)
+
+    # Map Figure
+    fig_map, ax_map = plt.subplots(figsize=(6, 6))
+    im_map = ax_map.imshow(summed,
+                            extent=[x_edges[0], x_edges[-1], y_edges[-1], y_edges[0]],
+                            origin='upper', cmap=heatmap_cmap, aspect='equal')
+    ax_map.set_xlabel('X Position (um)')
+    ax_map.set_ylabel('Y Position (um)')
+    ax_map.set_title('PL Intensity Map')
+    fig_map.colorbar(im_map, ax=ax_map, label='Peak Intensity (>550 nm)')
+    fig_map.savefig(os.path.join(base_path, 'pl_map.png'), dpi=400)
+    plt.close(fig_map)
+
+    dx = xs[1] - xs[0] if len(xs) > 1 else 1.0
+    dy = ys[1] - ys[0] if len(ys) > 1 else 1.0
+    n_rows = len(ys)
+    n_cols = len(xs)
+
+    # --- Emitter selection state ---
+    if classified is not None:
+        iys_e, ixs_e = np.where(classified == 1)
+        emitter_xs = xs[ixs_e].astype(float)
+        emitter_ys = ys[iys_e].astype(float)
+    else:
+        emitter_xs = np.array([])
+        emitter_ys = np.array([])
+    n_emitters = len(emitter_xs)
+    selected = [True] * n_emitters
+
+    # --- 4. Setup Interactive Plot ---
+    fig, (ax_img, ax_spec) = plt.subplots(1, 2, figsize=(14, 7))
+
+    im = ax_img.imshow(summed,
+                       extent=[x_edges[0], x_edges[-1], y_edges[-1], y_edges[0]],
+                       origin='upper', cmap=heatmap_cmap, aspect='equal')
+    ax_img.set_title(f'{title}  —  right-click emitter to toggle Selected / Ignored')
+    ax_img.set_xlabel(xlabel)
+    ax_img.set_ylabel(ylabel)
+    fig.colorbar(im, ax=ax_img, label='Peak Intensity (>550 nm)')
+
+    scatter = None
+    if n_emitters > 0:
+        scatter = ax_img.scatter(emitter_xs, emitter_ys,
+                                 facecolors='none', edgecolors=['red'] * n_emitters,
+                                 s=100, linewidths=2, zorder=5)
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='none', markerfacecolor='none',
+                   markeredgecolor='red', markersize=10, markeredgewidth=2, label='Selected'),
+            Line2D([0], [0], marker='o', color='none', markerfacecolor='none',
+                   markeredgecolor='gray', markersize=10, markeredgewidth=2, label='Ignored'),
+        ]
+        ax_img.legend(handles=legend_elements, loc='upper right')
+
+    def update_scatter():
+        scatter.set_edgecolors(['red' if s else 'gray' for s in selected])
+        fig.canvas.draw_idle()
+
+    cursor_rect = patches.Rectangle((xs[0] - dx/2, ys[0] - dy/2), dx, dy,
+                                     linewidth=4, edgecolor='black', facecolor='none', visible=False)
+    ax_img.add_patch(cursor_rect)
+
+    ax_spec.set_xlabel('Wavelength')
+    ax_spec.set_ylabel('Intensity')
+    ax_spec.set_xlim(np.min(wl), np.max(wl))
+
+    (line,) = ax_spec.plot(wl, intensities[0, 0, :], lw=2)
+    peak_vline = ax_spec.axvline(wl[0], color='red', linestyle='--', alpha=0.7, visible=False)
+    (fwhm_line,) = ax_spec.plot([], [], color='orange', lw=2, visible=False)
+    status_text = ax_spec.text(0.5, 1.02, '', transform=ax_spec.transAxes, ha='center', va='bottom',
+                               color='black', fontweight='bold', fontsize=12)
+    coord_text  = ax_spec.text(0.5, 0.95, '', transform=ax_spec.transAxes, ha='center',
+                               bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray'))
+    peak_text   = ax_spec.text(0.95, 0.85, '', transform=ax_spec.transAxes, ha='right', va='top',
+                               bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'), visible=False)
+
+    ax_img.set_xlim(np.min(x_edges), np.max(x_edges))
+    ax_img.set_ylim(np.max(y_edges), np.min(y_edges))
+
+    # --- 5. Logic ---
+    class Player:
+        def __init__(self):
+            self.ix = 0
+            self.iy = 0
+            self.is_playing = False
+            self.is_locked = False
+            self.timer = fig.canvas.new_timer(interval=int(slideshow_interval * 1000))
+            self.timer.add_callback(self.step_forward)
+
+        def update_view(self):
+            spectrum = intensities[self.iy, self.ix, :]
+            line.set_data(wl, spectrum)
+
+            is_class1 = (classified is not None) and (classified[self.iy, self.ix] == 1)
+            if is_class1:
+                res = classifier.get_peak_annotation(spectrum, wl)
+                if res:
+                    p_wl, p_int, l_wl, r_wl, fwhm = res
+                    peak_vline.set_xdata([p_wl, p_wl])
+                    fwhm_line.set_data([l_wl, r_wl], [p_int/2, p_int/2])
+                    peak_text.set_text(f"Center: {p_wl:.1f} nm\nFWHM: {fwhm:.1f} nm")
+                    peak_vline.set_visible(True)
+                    fwhm_line.set_visible(True)
+                    peak_text.set_visible(True)
+                else:
+                    peak_vline.set_visible(False)
+                    fwhm_line.set_visible(False)
+                    peak_text.set_visible(False)
+            else:
+                peak_vline.set_visible(False)
+                fwhm_line.set_visible(False)
+                peak_text.set_visible(False)
+
+            local_min = np.min(spectrum)
+            local_max = np.max(spectrum)
+            padding = (local_max - local_min) * 0.1 if local_max != local_min else 1.0
+            ax_spec.set_ylim(local_min - padding, local_max + padding)
+
+            cursor_rect.set_xy((xs[self.ix] - dx/2, ys[self.iy] - dy/2))
+            if self.is_locked:
+                cursor_rect.set_edgecolor('red')
+                status_str = "LOCKED (Click to unlock)"
+            else:
+                cursor_rect.set_edgecolor('black')
+                status_str = "PLAYING (Press Space to Pause)" if self.is_playing else "HOVERING (Click to lock)"
+            cursor_rect.set_visible(True)
+            status_text.set_text(status_str)
+            coord_text.set_text(f"x={xs[self.ix]:.2f}, y={ys[self.iy]:.2f}")
+            fig.canvas.draw_idle()
+
+        def step_forward(self):
+            self.ix += 1
+            if self.ix >= n_cols:
+                self.ix = 0
+                self.iy += 1
+                if self.iy >= n_rows:
+                    self.iy = 0
+            self.update_view()
+
+        def step_backward(self):
+            self.ix -= 1
+            if self.ix < 0:
+                self.ix = n_cols - 1
+                self.iy -= 1
+                if self.iy < 0:
+                    self.iy = n_rows - 1
+            self.update_view()
+
+        def move_up(self):
+            self.iy -= 1
+            if self.iy < 0:
+                self.iy = n_rows - 1
+            self.update_view()
+
+        def move_down(self):
+            self.iy += 1
+            if self.iy >= n_rows:
+                self.iy = 0
+            self.update_view()
+
+        def toggle_play(self):
+            if self.is_playing:
+                self.timer.stop()
+                self.is_playing = False
+            else:
+                self.timer.start()
+                self.is_playing = True
+            self.update_view()
+
+        def set_pos(self, ix, iy):
+            if ix != self.ix or iy != self.iy:
+                self.ix = ix
+                self.iy = iy
+                self.update_view()
+
+    player = Player()
+
+    # --- 6. Inputs ---
+    def on_key(event):
+        if event.key == 'right':
+            player.step_forward()
+        elif event.key == 'left':
+            player.step_backward()
+        elif event.key == 'up':
+            player.move_up()
+        elif event.key == 'down':
+            player.move_down()
+        elif event.key == ' ':
+            player.toggle_play()
+        elif event.key == 'q':
+            plt.close(fig)
+
+    def on_move(event):
+        if player.is_locked or event.inaxes != ax_img:
+            return
+        xdata, ydata = event.xdata, event.ydata
+        if xdata is None or ydata is None:
+            return
+        player.set_pos(int(np.argmin(np.abs(xs - xdata))),
+                       int(np.argmin(np.abs(ys - ydata))))
+
+    def on_click(event):
+        if event.inaxes != ax_img:
+            return
+        if event.button == 1:
+            player.is_locked = not player.is_locked
+            player.update_view()
+        elif event.button == 3 and n_emitters > 0:
+            if event.xdata is None or event.ydata is None:
+                return
+            dists = np.sqrt((emitter_xs - event.xdata)**2 + (emitter_ys - event.ydata)**2)
+            nearest = int(np.argmin(dists))
+            if dists[nearest] < max(dx, dy):
+                selected[nearest] = not selected[nearest]
+                update_scatter()
+
+    fig.canvas.mpl_connect('motion_notify_event', on_move)
+    fig.canvas.mpl_connect('button_press_event', on_click)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+
+    plt.tight_layout()
+    plt.show(block=True)
+
+    return [(float(emitter_xs[i]), float(emitter_ys[i])) for i in range(n_emitters) if selected[i]]
 
 
 def open_heatmap(foldername, scan_type, data_folder='data', **kwargs):

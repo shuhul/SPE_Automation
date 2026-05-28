@@ -47,6 +47,32 @@ def classify_spectrum(spectrum, wl, ratio_threshold=1.05):
     return 1, emission_peak_height, emission_peak_wl
 
 
+def get_peak_annotation(spectrum, wl):
+    """Return (peak_wl, peak_height, left_wl, right_wl, fwhm_nm) for the emission peak
+    using the exact same scipy logic as classify_spectrum. Returns None if no emission
+    peak is found in the 560-630 nm window."""
+    peaks, properties = find_peaks(spectrum, height=40, prominence=20, distance=10)
+    if len(peaks) == 0:
+        return None
+    widths, _, left_ips, right_ips = peak_widths(spectrum, peaks, rel_height=0.5)
+    peak_wls    = wl[peaks]
+    peak_heights = properties["peak_heights"]
+
+    emission_mask = (peak_wls > 560) & (peak_wls < 630)
+    valid = np.where(emission_mask)[0]
+    if len(valid) == 0:
+        return None
+
+    idx        = valid[np.argmax(peak_heights[valid])]
+    peak_wl    = float(peak_wls[idx])
+    peak_height = float(peak_heights[idx])
+    fwhm_nm    = float(widths[idx] * (wl[1] - wl[0]))
+    left_wl    = float(np.interp(left_ips[idx],  np.arange(len(wl)), wl))
+    right_wl   = float(np.interp(right_ips[idx], np.arange(len(wl)), wl))
+
+    return peak_wl, peak_height, left_wl, right_wl, fwhm_nm
+
+
 def classify_all(foldername, scan_type, data_folder='data', threshold=1.05, 
                  spatial_radius_um=0.8, wl_diff_threshold=6.0):
     
