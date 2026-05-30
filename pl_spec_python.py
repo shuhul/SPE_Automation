@@ -37,7 +37,8 @@ def _send_telegram(current_user, message):
 
 def pl_spec_lf(xdim, ydim, dx, dy, foldername, current_user, center=(0, 0),
                grating=150, exposure_time=1, center_wavelength=700,
-               classification_threshold=1.05, scan_type='coarse', data_folder='data'):
+               classification_threshold=1.05, scan_type='coarse', data_folder='data',
+               stop_immediately_flag=None):
     """
     Full PL spectral scan using the LightField Python backend.
 
@@ -55,6 +56,9 @@ def pl_spec_lf(xdim, ydim, dx, dy, foldername, current_user, center=(0, 0),
         classification_threshold (float): Min fraction of laser peak for emitter classification.
         scan_type (str): Subfolder name, e.g. 'coarse' or 'fine'.
         data_folder (str): Root data directory.
+        stop_immediately_flag (callable): Function that returns True if emergency stop requested.
+    Returns:
+        str: 'complete' if scan finished, 'stopped' if emergency stop triggered.
     """
     out_of_focus_detected = False
 
@@ -82,53 +86,92 @@ def pl_spec_lf(xdim, ydim, dx, dy, foldername, current_user, center=(0, 0),
     ys = np.array([center[1]]) if ydim == 0 else np.arange(-ydim/2 + center[1], ydim/2 + dy + center[1], dy)
 
     output = np.zeros((len(ys), len(xs), num))
+    iy_last_acquired = -1
+    ix_last_acquired = -1
+    acquired_all = False
+    stopped_early = False
 
     print('Starting scan...')
     sgd.sgd_on()
 
-    first        = True
-    sent_warning = False
-    cutoff       = -1
-
-    with tqdm(total=len(ys) * len(xs), desc='Scanning') as pbar:
-        for iy, y in enumerate(ys):
-            for ix, x in enumerate(xs):
-                sgd.set_position(x, y, silent=True)
-                intensity, wl_acq = lf_spec.lf_acquire()
-                intensity = _fix_length(np.array(intensity).flatten(), num)
-                wl        = np.array(wl_acq).flatten()
-                np.save(os.path.join(folder_path, 'wl.npy'), wl)
-
-                # Focus check via laser peak
-                window = (wl > 529) & (wl < 535)
-                if np.any(window):
-                    peak_intensity = intensity[window].max()
-                    if first:
-                        cutoff = 0.5 * peak_intensity
-                        first  = False
-                    elif peak_intensity < cutoff:
-                        if not sent_warning:
-                            _send_telegram(current_user, f"WARNING: Out of focus at {x:.2f}, {y:.2f}!")
-                            sent_warning = True
-                        out_of_focus_detected = True
-
-                output[iy, ix, :] = intensity
-                pbar.set_description(f'Acquiring x={x:.2f}, y={y:.2f}')
-                pbar.update(1)
-
-    sgd.sgd_off()
-
-    np.save(os.path.join(folder_path, 'out.npy'), output)
-    np.save(os.path.join(folder_path, 'xs.npy'),  xs)
-    np.save(os.path.join(folder_path, 'ys.npy'),  ys)
-
-    print('Scan complete, classifying data...')
     try:
-        classifer.classify_all(foldername, scan_type,
-                               threshold=classification_threshold, data_folder=data_folder)
-        print('Classification complete!')
-    except Exception as e:
-        print(f"Classifier failed: {e}")
+        first        = True
+        sent_warning = False
+        cutoff       = -1
+
+        with tqdm(total=len(ys) * len(xs), desc='Scanning') as pbar:
+            for iy, y in enumerate(ys):
+                for ix, x in enumerate(xs):
+                    # Check for emergency stop
+                    if stop_immediately_flag:
+                        should_stop = stop_immediately_flag()
+                        if should_stop:
+                            print(f'\n[DEBUG] Emergency stop triggered at ({x:.2f}, {y:.2f})')
+                            stopped_early = True
+                            break
+
+                    sgd.set_position(x, y, silent=True)
+                    intensity, wl_acq = lf_spec.lf_acquire()
+                    intensity = _fix_length(np.array(intensity).flatten(), num)
+                    wl        = np.array(wl_acq).flatten()
+                    np.save(os.path.join(folder_path, 'wl.npy'), wl)
+
+                    # Focus check via laser peak
+                    window = (wl > 529) & (wl < 535)
+                    if np.any(window):
+                        peak_intensity = intensity[window].max()
+                        if first:
+                            cutoff = 0.5 * peak_intensity
+                            first  = False
+                        elif peak_intensity < cutoff:
+                            if not sent_warning:
+                                _send_telegram(current_user, f"WARNING: Out of focus at {x:.2f}, {y:.2f}!")
+                                sent_warning = True
+                            out_of_focus_detected = True
+
+                    output[iy, ix, :] = intensity
+                    iy_last_acquired = iy
+                    ix_last_acquired = ix
+                    pbar.set_description(f'Acquiring x={x:.2f}, y={y:.2f}')
+                    pbar.update(1)
+
+                if stopped_early:
+                    break
+
+        acquired_all = (iy_last_acquired == len(ys) - 1 and ix_last_acquired == len(xs) - 1)
+
+    finally:
+        sgd.sgd_off()
+
+        # Save all data (complete array, unfilled positions are zeros)
+        np.save(os.path.join(folder_path, 'out.npy'), output)
+        np.save(os.path.join(folder_path, 'xs.npy'),  xs)
+        np.save(os.path.join(folder_path, 'ys.npy'),  ys)
+
+        # Save acquisition info
+        points_acquired = iy_last_acquired * len(xs) + (ix_last_acquired + 1) if iy_last_acquired >= 0 else 0
+        with open(os.path.join(folder_path, '_acquisition_info.txt'), 'w') as f:
+            f.write(f"status: {'complete' if acquired_all else 'stopped'}\n")
+            f.write(f"points_acquired: {points_acquired}\n")
+            f.write(f"total_points: {len(ys) * len(xs)}\n")
+            f.write(f"last_y_index: {iy_last_acquired}\n")
+            f.write(f"last_x_index: {ix_last_acquired}\n")
+
+    # Skip classification if scan was incomplete
+    if acquired_all:
+        print('Scan complete, classifying data...')
+        try:
+            classifer.classify_all(foldername, scan_type,
+                                   threshold=classification_threshold, data_folder=data_folder)
+            print('Classification complete!')
+        except Exception as e:
+            print(f"Classifier failed: {e}")
+    else:
+        print('Scan stopped early — skipping classification.')
+        points_acquired = iy_last_acquired * len(xs) + (ix_last_acquired + 1) if iy_last_acquired >= 0 else 0
+        print(f'  Acquired {points_acquired} / {len(ys) * len(xs)} points')
 
     if out_of_focus_detected:
         print('[WARNING] Scan completed, but focus was lost during acquisition.')
+
+    return 'complete' if acquired_all else 'stopped'
