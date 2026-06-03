@@ -36,8 +36,8 @@ import pl_spec_python as psp
 # CONFIGURATION
 # ============================================================================
 
-Z_STAGE_SERIAL = "71000001"  # Replace with your actual Z-stage serial number
-Z_STAGE_CHANNEL = 2           # Channel number (e.g., 1, 2, 3 for multi-channel)
+Z_STAGE_SERIAL = "71945320"  # Replace with your actual Z-stage serial number
+Z_STAGE_CHANNEL = 1           # Channel number (e.g., 1, 2, 3 for multi-channel)
 Z_MIN_VOLTAGE = 0.0           # Volts
 Z_MAX_VOLTAGE = 150.0         # Volts
 
@@ -55,7 +55,7 @@ PHASE2_STEP = 0.1             # 0.1V steps
 # Spectrum analysis
 LASER_WAVELENGTH_MIN = 530    # nm
 LASER_WAVELENGTH_MAX = 535    # nm
-INTEGRATION_TIME_S = 1.0      # 1 second per spectrum
+INTEGRATION_TIME_S = 2.0      # 1 second per spectrum
 
 # Logging
 DEBUG_LOG_FILE = 'autofocus_debug.log'
@@ -170,10 +170,11 @@ def set_z_voltage(voltage):
         _log_debug(f"WARNING: Z-stage not initialized; cannot set voltage to {voltage:.2f}V")
         return False
 
-    voltage = np.clip(voltage, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
+ #   voltage = np.clip(voltage, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
 
     try:
-        _channel.SetOutputVoltage(Decimal(str(voltage)))
+      #  _channel.SetOutputVoltage(Decimal(str(voltage)))
+        _channel.SetOutputVoltage(voltage)
         time.sleep(0.1)
         return True
     except Exception as e:
@@ -189,7 +190,7 @@ def get_z_voltage():
 
     try:
         voltage = _channel.GetOutputVoltage()
-        return float(voltage)
+        return (voltage)
     except Exception as e:
         _log_debug(f"WARNING: Could not read Z voltage: {e}")
         return None
@@ -217,7 +218,7 @@ def get_532nm_peak_intensity(spectrum, wl):
         return -1.0
 
     laser_idx = laser_indices[np.argmax(peak_heights[laser_indices])]
-    return float(peak_heights[laser_idx])
+    return (peak_heights[laser_idx])
 
 # ============================================================================
 # PHASE 1a: SYMMETRIC SCAN ± 10V @ 1V STEPS
@@ -231,11 +232,12 @@ def phase1a_symmetric_scan(center_x, center_y, grating, exposure_s, center_wl):
     if current_v is None:
         _log_debug("ERROR: Could not read current voltage")
         return None
+    cv_f=str(current_v)
 
-    _log_debug(f"Current voltage: {current_v:.2f}V")
+    _log_debug("Current voltage: "+cv_f+"V")
 
-    v_min = np.clip(current_v - PHASE1A_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
-    v_max = np.clip(current_v + PHASE1A_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
+    v_min = np.clip(float(cv_f) - PHASE1A_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
+    v_max = np.clip(float(cv_f) + PHASE1A_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
 
     num_points = int((v_max - v_min) / PHASE1A_STEP) + 1
     voltages = np.linspace(v_min, v_max, num_points)
@@ -247,7 +249,7 @@ def phase1a_symmetric_scan(center_x, center_y, grating, exposure_s, center_wl):
 
     for i, voltage in enumerate(voltages):
         _log_debug(f"  [{i+1}/{len(voltages)}] Setting voltage to {voltage:.2f}V...")
-
+        voltage=Decimal(voltage)
         if not set_z_voltage(voltage):
             _log_debug(f"    ERROR: Could not set voltage; skipping.")
             intensities.append(-1.0)
@@ -545,11 +547,14 @@ if __name__ == '__main__':
         current_v = get_z_voltage()
         print(f"✓ Current voltage: {current_v} V")
 
-        if set_z_voltage(75.0):
-            print("✓ Successfully set voltage to 75.0 V")
+        if set_z_voltage(current_v):
+            print("✓ Successfully set voltage")
             time.sleep(0.5)
             new_v = get_z_voltage()
             print(f"✓ Verified voltage: {new_v} V")
+
+            autofocus_on_emitter((0, 0), 150, INTEGRATION_TIME_S, 700,
+                         current_user=None, foldername=None)
 
         autofocus_shutdown()
         print("✓ Z-stage shutdown complete.")

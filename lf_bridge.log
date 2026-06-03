@@ -713,3 +713,25 @@ Exception rethrown at [0]:
    at System.Runtime.Remoting.Proxies.RealProxy.PrivateInvoke(MessageData& msgData, Int32 type)
    at PrincetonInstruments.LightField.AddIns.Contracts.IExperimentContract.SetValue(String setting, Object value)
    at PrincetonInstruments.LightField.AddIns.HostSideAdapters.IExperimentContractToViewHostAdapter.SetValue(String setting, Object value)
+2026-06-01 16:11:45,609 INFO LightField bridge starting...
+2026-06-01 16:11:45,619 INFO Bridge listening on localhost:27028
+2026-06-01 16:12:09,945 INFO Connected to LightField. Experiment: 'Untitled Experiment'
+2026-06-01 16:12:10,612 INFO Setup complete, LightField ready.
+2026-06-01 16:12:51,878 INFO Setup complete, LightField ready.
+2026-06-01 21:08:50,173 INFO Setup complete, LightField ready.
+2026-06-02 09:38:00,348 INFO Setup complete, LightField ready.
+2026-06-02 10:01:34,072 INFO Setup complete, LightField ready.
+2026-06-02 11:23:17,380 INFO Setup complete, LightField ready.
+2026-06-02 12:51:52,233 INFO Setup complete, LightField ready.
+2026-06-02 13:11:56,929 INFO Setup complete, LightField ready.
+2026-06-02 14:06:45,018 ERROR Command "acquire" failed (marking LF disconnected): Acquisition timed out after 60s
+2026-06-02 14:07:48,751 INFO Connected to LightField. Experiment: 'PL'
+2026-06-02 14:07:48,765 INFO Setup complete, LightField ready.
+2026-06-02 16:06:06,490 INFO Setup complete, LightField ready.
+2026-06-02 16:09:55,789 INFO Setup complete, LightField ready.
+2026-06-02 18:19:57,287 WARNING LightField IPC dropped — attempting auto-reconnect...
+2026-06-02 18:20:22,469 INFO Connected to LightField. Experiment: 'PL'
+2026-06-02 18:20:22,481 INFO Setup complete, LightField ready.
+2026-06-02 18:21:51,033 INFO Setup complete, LightField ready.
+2026-06-02 18:25:48,459 INFO Setup complete, LightField ready.
+2026-06-02 18:27:16,617 INFO Setup complete, LightField ready.
