@@ -31,28 +31,28 @@ import pl_spec_python as psp
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-plasma+anneal-Ch4-500uW-2s-fullauto-1'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-EL-bulkanneal-Ch3-f1-300uW-2s-fullauto'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
-CAL_FOLDER   = '2026-04-07_14-48-20'   # bandpass calibration subfolder name
+CAL_FOLDER   = '2026-05-28_18-08-36'   # bandpass calibration subfolder name
 
 # Coarse scan — wide area to locate candidate emitters
-COARSE_XDIM       = 2   # um
-COARSE_YDIM       = 2   # um
+COARSE_XDIM       = 20   # um
+COARSE_YDIM       = 20   # um
 COARSE_DX         = 0.5    # um step size
 COARSE_DY         = 0.5
-COARSE_CENTER     = (0.0, 0.0)
+COARSE_CENTER     = (0, 0)
 COARSE_GRATING    = 150
 COARSE_EXPOSURE_S = 2.0
 COARSE_CENTER_WL  = 700    # nm
 
 # Fine scan — zoomed scan centred on each classified emitter
-FINE_XDIM         = 1 # 3.0
-FINE_YDIM         = 1 # 3.0
+FINE_XDIM         = 3 # 3.0
+FINE_YDIM         = 3 # 3.0
 FINE_DX           = 0.5 # 0.25
 FINE_DY           = 0.5 # 0.25
 FINE_GRATING      = 600
-FINE_EXPOSURE_S   = 1.0
+FINE_EXPOSURE_S   = 3.0
 FINE_CENTER_WL    = 595
 
 # Long scan — single-point, high-exposure spectrum to measure ZPL precisely
