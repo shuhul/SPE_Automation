@@ -398,6 +398,9 @@ def phase1b_directional_scan(center_x, center_y, grating, exposure_s, center_wl,
 
 def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_peak_voltage):
     """Phase 2: Fine scan ±1V around coarse peak at 0.1V steps."""
+    
+    coarse_peak_voltage = float(coarse_peak_voltage)
+
     _log_debug(f"\n[PHASE 2] Fine scan ±{PHASE2_OFFSET}V @ {PHASE2_STEP}V steps around {coarse_peak_voltage:.2f}V")
 
     v_min = np.clip(coarse_peak_voltage - PHASE2_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
@@ -413,6 +416,8 @@ def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_
 
     for i, voltage in enumerate(voltages):
         _log_debug(f"  [{i+1}/{len(voltages)}] Setting voltage to {voltage:.2f}V...")
+
+        voltage = Decimal(str(float(voltage)))
 
         if not set_z_voltage(voltage):
             _log_debug(f"    ERROR: Could not set voltage; skipping")
