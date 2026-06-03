@@ -13,6 +13,8 @@ MANUAL_PLOT_INTERACTION = True
 
 import os
 import signal
+import threading
+import time
 import numpy as np
 from datetime import datetime
 
@@ -73,6 +75,42 @@ def _handle_stop(sig, frame):
 
 signal.signal(signal.SIGINT,  _handle_stop)
 signal.signal(signal.SIGTERM, _handle_stop)
+
+# ============================================================================
+# EMERGENCY STOP — Ctrl+X for immediate stop with partial data save
+# ============================================================================
+
+_stop_immediately = False
+_keyboard_monitor_running = False
+_monitor_thread = None
+_filter_is_up = False
+
+def _keyboard_monitor():
+    """Monitor keyboard for Ctrl+X to trigger emergency stop."""
+    global _stop_immediately
+    try:
+        import msvcrt
+        print('[INFO] Keyboard monitor started (Ctrl+X = emergency stop, q = quit)')
+        while _keyboard_monitor_running:
+            try:
+                if msvcrt.kbhit():
+                    key = msvcrt.getch()
+                    # Try multiple key combos for emergency stop
+                    # Ctrl+X = 0x18, Ctrl+Break = 0xE0 0x93, or also allow 'q'
+                    if key == b'\x18':  # Ctrl+X
+                        print('\n[CTRL+X] EMERGENCY STOP — stopping immediately with partial data save...')
+                        _stop_immediately = True
+                    elif key.lower() in [b'q']:  # Fallback: 'q' for quit
+                        print(f'\n[Q] Emergency stop requested...')
+                        _stop_immediately = True
+            except Exception as e:
+                print(f'[INFO] Keyboard monitor read error: {e}')
+            time.sleep(0.05)
+        print('[INFO] Keyboard monitor stopped')
+    except ImportError:
+        print('[INFO] msvcrt not available - keyboard monitor disabled')
+    except Exception as e:
+        print(f'[ERROR] Keyboard monitor failed: {e}')
 
 # ============================================================================
 # SPECTRUM HELPERS
@@ -156,13 +194,13 @@ def run_scan(scan_type, center, xdim, ydim, dx, dy, grating, exposure_s, center_
     """
     Run a spectral scan via pl_spec_python and save results to
     DATA_FOLDER/FOLDERNAME/scan_type/. Single-point: xdim=ydim=dx=dy=0.
-    Returns the folder path where data was saved.
+    Returns (folder_path, status) where status is 'complete' or 'stopped'.
     """
+    global _stop_immediately
     folder_path = os.path.join(DATA_FOLDER, FOLDERNAME, scan_type)
 
-    # Live hardware — delegate entirely to pl_spec_python
     try:
-        psp.pl_spec_lf(
+        status = psp.pl_spec_lf(
             xdim=xdim, ydim=ydim, dx=dx, dy=dy,
             center=center,
             grating=grating,
@@ -172,19 +210,28 @@ def run_scan(scan_type, center, xdim, ydim, dx, dy, grating, exposure_s, center_
             current_user=CURRENT_USER,
             scan_type=scan_type,
             data_folder=DATA_FOLDER,
+            stop_immediately_flag=lambda: _stop_immediately,
         )
+        return folder_path, status
     except KeyboardInterrupt:
         global _stop
         _stop = True
         print('\nScan interrupted.')
-
-    return folder_path
+        return folder_path, 'stopped'
 
 # ============================================================================
 # MAIN PIPELINE
 # ============================================================================
 
 def main():
+    global _keyboard_monitor_running, _monitor_thread, _filter_is_up
+    _filter_is_up = False
+
+    # Start keyboard monitor thread
+    _keyboard_monitor_running = True
+    _monitor_thread = threading.Thread(target=_keyboard_monitor, daemon=True)
+    _monitor_thread.start()
+
     print('=== SPE Automation ===')
     print(f'Folder: {FOLDERNAME}')
     print(f'Cal:    {CAL_FOLDER}')
@@ -201,7 +248,7 @@ def main():
     # ── STEP 1: COARSE SCAN ───────────────────────────────────────────────────
     # Scans the full area to find candidate emitter positions.
     print(f'[STEP 1] Coarse scan  ({COARSE_XDIM}x{COARSE_YDIM} um, {COARSE_DX} um step)...')
-    run_scan(
+    _, status = run_scan(
         scan_type='coarse',
         center=COARSE_CENTER,
         xdim=COARSE_XDIM,     ydim=COARSE_YDIM,
@@ -210,7 +257,7 @@ def main():
         exposure_s=COARSE_EXPOSURE_S,
         center_wl=COARSE_CENTER_WL,
     )
-    if _stop:
+    if _stop or _stop_immediately:
         print('Stopped.')
         return
 
@@ -220,16 +267,26 @@ def main():
     xs_c        = np.load(os.path.join(coarse_path, 'xs.npy'))
     ys_c        = np.load(os.path.join(coarse_path, 'ys.npy'))
 
-    if MANUAL_PLOT_INTERACTION:
-        psp._send_telegram(CURRENT_USER, 'Coarse scan done. Select emitters and close the plot to continue.')
-        emitters = plotter.select_emitters(FOLDERNAME, 'coarse', data_folder=DATA_FOLDER)
-    else:
-        iys, ixs = np.where(classified == 1)
-        emitters = [(xs_c[ix], ys_c[iy]) for ix, iy in zip(ixs, iys)]
+    # Auto-select emitters; only pause for user if multiple candidates
+    iys, ixs = np.where(classified == 1)
+    auto_emitters = [(xs_c[ix], ys_c[iy]) for ix, iy in zip(ixs, iys)]
 
-    if len(emitters) == 0:
-        print('No emitters found/selected in coarse scan. Done.')
+    if len(auto_emitters) == 0:
+        print('No emitters found in coarse scan. Done.')
         return
+    elif len(auto_emitters) == 1:
+        print(f'Found 1 emitter at {auto_emitters[0]} — proceeding without pause.')
+        emitters = auto_emitters
+    else:
+        # Multiple emitters: allow manual selection if requested
+        if MANUAL_PLOT_INTERACTION:
+            psp._send_telegram(CURRENT_USER, 'Coarse scan done. Select emitters and close the plot to continue.')
+            emitters = plotter.select_emitters(FOLDERNAME, 'coarse', data_folder=DATA_FOLDER)
+            if len(emitters) == 0:
+                print('No emitters selected. Done.')
+                return
+        else:
+            emitters = auto_emitters
 
     print(f'Running fine scans on {len(emitters)} emitter(s): {[(f"{x:.2f}", f"{y:.2f}") for x, y in emitters]}')
 
@@ -237,7 +294,7 @@ def main():
     results = []   # collect (emitter_xy, target_pos, zpl_wl, bandpass_angle) for summary
 
     for i, (ex, ey) in enumerate(emitters):
-        if _stop:
+        if _stop or _stop_immediately:
             break
 
         print(f'\n=== Emitter {i+1}/{len(emitters)}  ({ex:.2f}, {ey:.2f}) ===')
@@ -246,7 +303,7 @@ def main():
         # Zoomed scan centred on the emitter to localise the brightest spot.
         fine_type = f'fine_x{ex:.1f}_y{ey:.1f}'
         print(f'[STEP 2a] Fine scan  ({FINE_XDIM}x{FINE_YDIM} um, {FINE_DX} um step)...')
-        run_scan(
+        _, status = run_scan(
             scan_type=fine_type,
             center=(ex, ey),
             xdim=FINE_XDIM,   ydim=FINE_YDIM,
@@ -255,7 +312,7 @@ def main():
             exposure_s=FINE_EXPOSURE_S,
             center_wl=FINE_CENTER_WL,
         )
-        if _stop:
+        if _stop or _stop_immediately:
             break
 
         if MANUAL_PLOT_INTERACTION:
@@ -272,10 +329,12 @@ def main():
         peak_map      = fine_out[:, :, emission_mask].max(axis=-1)
 
         fine_cls_path = os.path.join(fine_path, 'classified.npy')
+        had_classified_pixels = False
         if os.path.exists(fine_cls_path):
             fine_cls     = np.load(fine_cls_path)
             iys_f, ixs_f = np.where(fine_cls == 1)
             if len(ixs_f) > 0:
+                had_classified_pixels = True
                 # Among classified pixels, take the brightest one
                 best    = np.argmax([peak_map[iy, ix] for iy, ix in zip(iys_f, ixs_f)])
                 tx, ty  = fine_xs[ixs_f[best]], fine_ys[iys_f[best]]
@@ -295,7 +354,7 @@ def main():
 
         long_center_wl = 595
         print(f'[STEP 2b] Long scan  ({LONG_EXPOSURE_S}s, 600 g/mm)...')
-        run_scan(
+        _, status = run_scan(
             scan_type=long_type,
             center=(tx, ty),
             xdim=0, ydim=0, dx=0, dy=0,
@@ -303,7 +362,7 @@ def main():
             exposure_s=LONG_EXPOSURE_S,
             center_wl=long_center_wl,
         )
-        if _stop:
+        if _stop or _stop_immediately:
             break
 
         # ── STEP 2c: BANDPASS FILTER SETUP ───────────────────────────────────
@@ -320,6 +379,11 @@ def main():
             results.append((ex, ey, tx, ty, None, None, 'no ZPL'))
             continue
 
+        if not had_classified_pixels:
+            print('  Fine scan had no classified pixels — skipping bandpass filter.')
+            results.append((ex, ey, tx, ty, target_wl, None, 'no classified'))
+            continue
+
         angle = _angle_for_wavelength(target_wl)
         print(f'[STEP 2c] ZPL FWHM centre: {target_wl:.1f} nm — setting bandpass filter...')
         if angle is None:
@@ -327,12 +391,13 @@ def main():
             results.append((ex, ey, tx, ty, target_wl, None, 'no cal'))
             continue
         fil.flip_up()
+        _filter_is_up = True
         fil.rotation_move(angle)
         print(f'  Filter set to {angle:.1f} deg.')
 
         filter_long_type = f'long_filter_x{tx:.1f}_y{ty:.1f}'
         print(f'[STEP 2d] Long scan through filter ({LONG_EXPOSURE_S}s, 600 g/mm)...')
-        run_scan(
+        _, status = run_scan(
             scan_type=filter_long_type,
             center=(tx, ty),
             xdim=0, ydim=0, dx=0, dy=0,
@@ -344,14 +409,16 @@ def main():
         save_spectrum_plot(filter_long_path, title=f'Filter scan ({tx:.2f}, {ty:.2f})')
         if MANUAL_PLOT_INTERACTION:
             plotter.open_heatmap(FOLDERNAME, filter_long_type, data_folder=DATA_FOLDER)
-        if _stop:
+        if _stop or _stop_immediately:
             fil.flip_down()
+            _filter_is_up = False
             break
 
         results.append((ex, ey, tx, ty, target_wl, angle, 'filter set'))
         # G2 measurement would run here
         print('  G2 measurement skipped (not implemented yet).')
         fil.flip_down()
+        _filter_is_up = False
 
     fil.filter_off()
 
@@ -368,4 +435,28 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    finally:
+        _keyboard_monitor_running = False
+
+        try:
+            if _filter_is_up:
+                fil.flip_down()
+        except Exception as e:
+            print(f'Error flipping down filter: {e}')
+
+        try:
+            sgd.sgd_off()
+        except Exception as e:
+            print(f'Error turning off SGD: {e}')
+
+        try:
+            fil.filter_off()
+        except Exception as e:
+            print(f'Error turning off filter: {e}')
+
+        try:
+            lf_spec.lf_shutdown()
+        except Exception as e:
+            print(f'Error shutting down LightField: {e}')
