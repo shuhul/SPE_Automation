@@ -173,12 +173,11 @@ def set_z_voltage(voltage):
  #   voltage = np.clip(voltage, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
 
     try:
-      #  _channel.SetOutputVoltage(Decimal(str(voltage)))
-        _channel.SetOutputVoltage(voltage)
+        _channel.SetOutputVoltage(Decimal(str(voltage)))
         time.sleep(0.1)
         return True
     except Exception as e:
-        _log_debug(f"ERROR: Failed to set Z voltage to {voltage:.2f}V: {e}")
+        _log_debug(f"ERROR: Failed to set Z voltage to {float(voltage):.2f}V: {e}")
         return False
 
 def get_z_voltage():
@@ -417,7 +416,7 @@ def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_
     for i, voltage in enumerate(voltages):
         _log_debug(f"  [{i+1}/{len(voltages)}] Setting voltage to {voltage:.2f}V...")
 
-        voltage = Decimal(str(float(voltage)))
+        voltage = Decimal(float(voltage))
 
         if not set_z_voltage(voltage):
             _log_debug(f"    ERROR: Could not set voltage; skipping")
@@ -546,6 +545,7 @@ def autofocus_on_emitter(emitter_pos, grating, exposure_s, center_wl,
 if __name__ == '__main__':
     """Quick test: initialize Z-stage and verify connection."""
     print("Testing autofocus module...")
+    lf_spec.lf_connect()
 
     if autofocus_init():
         print("✓ Z-stage initialized successfully.")

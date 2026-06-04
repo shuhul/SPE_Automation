@@ -735,3 +735,30 @@ Exception rethrown at [0]:
 2026-06-02 18:21:51,033 INFO Setup complete, LightField ready.
 2026-06-02 18:25:48,459 INFO Setup complete, LightField ready.
 2026-06-02 18:27:16,617 INFO Setup complete, LightField ready.
+2026-06-03 09:18:36,502 WARNING LightField IPC dropped — attempting auto-reconnect...
+2026-06-03 09:19:01,807 INFO Connected to LightField. Experiment: 'PL'
+2026-06-03 09:19:01,821 INFO Setup complete, LightField ready.
+2026-06-03 10:13:46,211 INFO Setup complete, LightField ready.
+2026-06-03 12:56:41,467 INFO LightField bridge starting...
+2026-06-03 12:56:41,478 INFO Bridge listening on localhost:27028
+2026-06-03 12:57:05,295 INFO Connected to LightField. Experiment: 'PL'
+2026-06-03 12:57:06,120 INFO Setup complete, LightField ready.
+2026-06-03 13:52:40,730 INFO Setup complete, LightField ready.
+2026-06-03 16:53:35,929 INFO Setup complete, LightField ready.
+2026-06-03 17:52:26,592 INFO Setup complete, LightField ready.
+2026-06-04 09:55:43,339 INFO Setup complete, LightField ready.
+2026-06-04 10:07:13,551 INFO Setup complete, LightField ready.
+2026-06-04 10:54:54,462 INFO Setup complete, LightField ready.
+2026-06-04 11:32:01,945 INFO Setup complete, LightField ready.
+2026-06-04 12:18:35,933 INFO Setup complete, LightField ready.
+2026-06-04 13:46:18,285 WARNING LightField IPC dropped — attempting auto-reconnect...
+2026-06-04 13:46:40,550 INFO Connected to LightField. Experiment: 'PL'
+2026-06-04 13:46:40,579 INFO Setup complete, LightField ready.
+2026-06-04 13:51:29,646 INFO Shutdown command received.
+2026-06-04 13:51:30,928 INFO LightField Automation disposed cleanly.
+2026-06-04 14:09:04,158 INFO LightField bridge starting...
+2026-06-04 14:09:04,171 INFO Bridge listening on localhost:27028
+2026-06-04 14:09:21,997 INFO Connected to LightField. Experiment: 'PL'
+2026-06-04 14:09:30,996 INFO Setup complete, LightField ready.
+2026-06-04 14:10:06,125 INFO Shutdown command received.
+2026-06-04 14:10:07,376 INFO LightField Automation disposed cleanly.
