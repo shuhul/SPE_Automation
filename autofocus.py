@@ -166,6 +166,10 @@ def set_z_voltage(voltage):
     """Set Z-stage output voltage."""
     global _channel
 
+    if voltage is None:
+        _log_debug("WARNING: set_z_voltage called with None voltage; ignoring.")
+        return False
+
     if not _autofocus_enabled or _channel is None:
         _log_debug(f"WARNING: Z-stage not initialized; cannot set voltage to {voltage:.2f}V")
         return False
@@ -173,7 +177,7 @@ def set_z_voltage(voltage):
     voltage = np.clip(voltage, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
 
     try:
-        _channel.SetOutputVoltage(Decimal(str(voltage)))
+        _channel.SetOutputVoltage(Decimal(float(voltage)))
         time.sleep(0.1)
         return True
     except Exception as e:
@@ -189,7 +193,7 @@ def get_z_voltage():
 
     try:
         voltage = _channel.GetOutputVoltage()
-        return float(voltage)
+        return float(str(voltage))
     except Exception as e:
         _log_debug(f"WARNING: Could not read Z voltage: {e}")
         return None

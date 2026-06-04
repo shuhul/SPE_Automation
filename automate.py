@@ -1,7 +1,6 @@
 """
 Full SPE automation: coarse scan -> fine scan -> long scan -> bandpass filter setup.
 G2 measurement is not included yet.
-
 Stop with Ctrl+C — the current acquisition finishes cleanly before exiting.
 """
 
@@ -33,14 +32,14 @@ import pl_spec_python as psp
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-PhENOM-Ch27-f004o016-500uW-1s-fullauto'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f1-500uW-1s-fullauto'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-05-28_18-08-36'   # bandpass calibration subfolder name
 
 # Coarse scan — wide area to locate candidate emitters
-COARSE_XDIM       = 30   # um
-COARSE_YDIM       = 30   # um
+COARSE_XDIM       = 20   # um
+COARSE_YDIM       = 20   # um
 COARSE_DX         = 0.5    # um step size
 COARSE_DY         = 0.5
 COARSE_CENTER     = (0, 0)
@@ -54,7 +53,7 @@ FINE_YDIM         = 3 # 3.0
 FINE_DX           = 0.25 # 0.25
 FINE_DY           = 0.25 # 0.25
 FINE_GRATING      = 600
-FINE_EXPOSURE_S   = 2.0
+FINE_EXPOSURE_S   = 1.0
 FINE_CENTER_WL    = 595
 
 # Long scan — single-point, high-exposure spectrum to measure ZPL precisely

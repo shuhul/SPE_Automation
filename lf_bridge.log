@@ -762,3 +762,20 @@ Exception rethrown at [0]:
 2026-06-04 14:09:30,996 INFO Setup complete, LightField ready.
 2026-06-04 14:10:06,125 INFO Shutdown command received.
 2026-06-04 14:10:07,376 INFO LightField Automation disposed cleanly.
+2026-06-04 14:14:21,969 INFO LightField bridge starting...
+2026-06-04 14:14:21,981 INFO Bridge listening on localhost:27028
+2026-06-04 14:14:39,813 INFO Connected to LightField. Experiment: 'PL'
+2026-06-04 14:14:45,401 INFO Setup complete, LightField ready.
+2026-06-04 14:16:13,869 INFO Setup complete, LightField ready.
+2026-06-04 14:23:07,928 INFO Setup complete, LightField ready.
+2026-06-04 14:24:35,894 INFO Setup complete, LightField ready.
+2026-06-04 14:25:15,867 INFO Setup complete, LightField ready.
+2026-06-04 14:26:43,815 INFO Setup complete, LightField ready.
+2026-06-04 14:40:46,478 INFO Setup complete, LightField ready.
+2026-06-04 15:52:38,891 INFO Shutdown command received.
+2026-06-04 15:52:40,138 INFO LightField Automation disposed cleanly.
+2026-06-04 16:11:11,584 INFO LightField bridge starting...
+2026-06-04 16:11:11,596 INFO Bridge listening on localhost:27028
+2026-06-04 16:11:34,699 INFO Connected to LightField. Experiment: 'PL'
+2026-06-04 16:15:40,922 INFO Setup complete, LightField ready.
+2026-06-04 16:17:09,380 INFO Setup complete, LightField ready.

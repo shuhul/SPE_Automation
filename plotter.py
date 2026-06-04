@@ -617,7 +617,7 @@ def plot_heatmap_manual(foldername, scan_type,
                         title='PL Spectrum',
                         xlabel='X Position (um)', ylabel='Y Position (um)', 
                         heatmap_cmap='viridis', class1_color='red', 
-                        data_folder='data', slideshow_interval=0.5):
+                        data_folder='data', slideshow_interval=0.1):
     
     # --- Check if file exists to prevent immediate crash ---
     base_path = os.path.join(data_folder, foldername, scan_type)
