@@ -17,7 +17,7 @@ import time
 import clr
 import numpy as np
 from datetime import datetime
-
+from scipy.signal import find_peaks
 # Kinesis imports (BenchtopPiezo for piezo Z-stage)
 clr.AddReference(r"C:\Program Files\Thorlabs\Kinesis\Thorlabs.MotionControl.DeviceManagerCLI.dll")
 clr.AddReference(r"C:\Program Files\Thorlabs\Kinesis\Thorlabs.MotionControl.GenericPiezoCLI.dll")
@@ -170,7 +170,7 @@ def set_z_voltage(voltage):
         _log_debug(f"WARNING: Z-stage not initialized; cannot set voltage to {voltage:.2f}V")
         return False
 
- #   voltage = np.clip(voltage, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
+    voltage = np.clip(voltage, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
 
     try:
         _channel.SetOutputVoltage(Decimal(str(voltage)))
@@ -189,7 +189,7 @@ def get_z_voltage():
 
     try:
         voltage = _channel.GetOutputVoltage()
-        return (voltage)
+        return float(voltage)
     except Exception as e:
         _log_debug(f"WARNING: Could not read Z voltage: {e}")
         return None
@@ -200,7 +200,7 @@ def get_z_voltage():
 
 def get_532nm_peak_intensity(spectrum, wl):
     """Extract 532 nm laser peak intensity from spectrum."""
-    from scipy.signal import find_peaks
+    #from scipy.signal import find_peaks
 
     peaks, properties = find_peaks(spectrum, height=10, prominence=5, distance=5)
 
@@ -217,7 +217,7 @@ def get_532nm_peak_intensity(spectrum, wl):
         return -1.0
 
     laser_idx = laser_indices[np.argmax(peak_heights[laser_indices])]
-    return (peak_heights[laser_idx])
+    return float(peak_heights[laser_idx])
 
 # ============================================================================
 # PHASE 1a: SYMMETRIC SCAN ± 10V @ 1V STEPS
@@ -231,14 +231,14 @@ def phase1a_symmetric_scan(center_x, center_y, grating, exposure_s, center_wl):
     if current_v is None:
         _log_debug("ERROR: Could not read current voltage")
         return None
-    cv_f=str(current_v)
+    #cv_f=str(current_v)
 
-    _log_debug("Current voltage: "+cv_f+"V")
+    _log_debug(f"Current voltage: {current_v:.2f}V")
 
-    v_min = np.clip(float(cv_f) - PHASE1A_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
-    v_max = np.clip(float(cv_f) + PHASE1A_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
+    v_min = np.clip(current_v - PHASE1A_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
+    v_max = np.clip(current_v + PHASE1A_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
 
-    num_points = int((v_max - v_min) / PHASE1A_STEP) + 1
+    num_points = int(round((v_max - v_min) / PHASE1A_STEP)) + 1
     voltages = np.linspace(v_min, v_max, num_points)
     intensities = []
 
@@ -247,9 +247,10 @@ def phase1a_symmetric_scan(center_x, center_y, grating, exposure_s, center_wl):
     lf_spec.lf_setup(exposure_s=exposure_s, center_wavelength=center_wl, grating=grating)
 
     for i, voltage in enumerate(voltages):
-        _log_debug(f"  [{i+1}/{len(voltages)}] Setting voltage to {voltage:.2f}V...")
-        voltage=Decimal(voltage)
-        if not set_z_voltage(voltage):
+        v = float(voltage)
+        _log_debug(f"  [{i+1}/{len(voltages)}] Setting voltage to {v:.2f}V...")
+        
+        if not set_z_voltage(v):
             _log_debug(f"    ERROR: Could not set voltage; skipping.")
             intensities.append(-1.0)
             continue
@@ -278,8 +279,8 @@ def phase1a_symmetric_scan(center_x, center_y, grating, exposure_s, center_wl):
     valid_intensities = np.array(intensities)[valid_mask]
 
     peak_idx = np.argmax(valid_intensities)
-    peak_voltage = valid_voltages[peak_idx]
-    peak_intensity = valid_intensities[peak_idx]
+    peak_voltage = float(valid_voltages[peak_idx])
+    peak_intensity = float(valid_intensities[peak_idx])
 
     peak_at_boundary = False
     boundary_direction = None
@@ -323,7 +324,7 @@ def phase1b_directional_scan(center_x, center_y, grating, exposure_s, center_wl,
     peak_intensity = -1.0
 
     step_count = 0
-    max_steps = int((Z_MAX_VOLTAGE - Z_MIN_VOLTAGE) / PHASE1B_STEP) + 1
+    max_steps = int(round((Z_MAX_VOLTAGE - Z_MIN_VOLTAGE) / PHASE1B_STEP)) + 1
 
     lf_spec.lf_setup(exposure_s=exposure_s, center_wavelength=center_wl, grating=grating)
 
@@ -334,8 +335,8 @@ def phase1b_directional_scan(center_x, center_y, grating, exposure_s, center_wl,
             _log_debug(f"Reached voltage boundary ({voltage:.2f}V); stopping search")
             peak_found = True
             if scan_intensities:
-                peak_voltage = scan_voltages[-1]
-                peak_intensity = scan_intensities[-1]
+                peak_voltage = float(scan_voltages[-1])
+                peak_intensity = float(scan_intensities[-1])
             break
 
         _log_debug(f"  Step {step_count + 1}: Setting voltage to {voltage:.2f}V...")
@@ -360,13 +361,13 @@ def phase1b_directional_scan(center_x, center_y, grating, exposure_s, center_wl,
                     _log_debug(f"Peak detected: intensity declined from {previous_valid_intensity:.1f} to {intensity:.1f}")
                     peak_found = True
                     # Use previous voltage/intensity as peak (it was higher)
-                    peak_voltage = scan_voltages[-1]
-                    peak_intensity = scan_intensities[-1]
+                    peak_voltage = float(scan_voltages[-1])
+                    peak_intensity = float(scan_intensities[-1])
                 else:
                     # Still ascending or first measurement, keep tracking
                     previous_valid_intensity = intensity
-                    peak_voltage = voltage
-                    peak_intensity = intensity
+                    peak_voltage = float(voltage)
+                    peak_intensity = float(intensity)
 
                 scan_voltages.append(voltage)
                 scan_intensities.append(intensity)
@@ -405,7 +406,7 @@ def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_
     v_min = np.clip(coarse_peak_voltage - PHASE2_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
     v_max = np.clip(coarse_peak_voltage + PHASE2_OFFSET, Z_MIN_VOLTAGE, Z_MAX_VOLTAGE)
 
-    num_points = int((v_max - v_min) / PHASE2_STEP) + 1
+    num_points = int(round((v_max - v_min) / PHASE2_STEP)) + 1
     voltages = np.linspace(v_min, v_max, num_points)
     intensities = []
 
@@ -414,11 +415,12 @@ def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_
     lf_spec.lf_setup(exposure_s=exposure_s, center_wavelength=center_wl, grating=grating)
 
     for i, voltage in enumerate(voltages):
-        _log_debug(f"  [{i+1}/{len(voltages)}] Setting voltage to {voltage:.2f}V...")
+        v = float(voltage)
+        _log_debug(f"  [{i+1}/{len(voltages)}] Setting voltage to {v:.2f}V...")
 
-        voltage = Decimal(float(voltage))
+       # voltage = Decimal(float(voltage))
 
-        if not set_z_voltage(voltage):
+        if not set_z_voltage(v):
             _log_debug(f"    ERROR: Could not set voltage; skipping")
             intensities.append(-1.0)
             continue
@@ -447,8 +449,8 @@ def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_
     valid_intensities = np.array(intensities)[valid_mask]
 
     peak_idx = np.argmax(valid_intensities)
-    peak_voltage = valid_voltages[peak_idx]
-    peak_intensity = valid_intensities[peak_idx]
+    peak_voltage = float(valid_voltages[peak_idx])
+    peak_intensity = float(valid_intensities[peak_idx])
 
     _log_debug(f"Fine peak found at {peak_voltage:.2f}V (intensity: {peak_intensity:.1f})")
 
