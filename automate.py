@@ -20,7 +20,6 @@ from datetime import datetime
 import matplotlib
 if not MANUAL_PLOT_INTERACTION:
     matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 import lf_spec
 import sgd
@@ -266,22 +265,6 @@ def main():
 
     # ── STEP 1: COARSE SCAN ───────────────────────────────────────────────────
     # Scans the full area to find candidate emitter positions.
-    if af_available:
-        print(f'[AUTOFOCUS] Running autofocus at coarse centre {COARSE_CENTER}...')
-        af_result = autofocus.autofocus_on_emitter(
-            emitter_pos=COARSE_CENTER,
-            grating=COARSE_GRATING,
-            exposure_s=COARSE_EXPOSURE_S,
-            center_wl=COARSE_CENTER_WL,
-            current_user=CURRENT_USER,
-            foldername=FOLDERNAME,
-        )
-        if af_result is not None:
-            print(f'  Autofocus locked at {af_result["voltage"]:.2f} V '
-                  f'(532 nm intensity: {af_result["intensity"]:.0f})')
-        else:
-            print('  [WARNING] Autofocus failed — proceeding with current Z position.')
-
     print(f'[STEP 1] Coarse scan  ({COARSE_XDIM}x{COARSE_YDIM} um, {COARSE_DX} um step)...')
     _, status = run_scan(
         scan_type='coarse',

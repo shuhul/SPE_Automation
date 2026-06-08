@@ -38,7 +38,7 @@ def classify_spectrum(spectrum, wl, ratio_threshold=None):
     return 1, emission_peak_height, emission_peak_wl
 
 
-# --- Previous classifier (ratio-based) — kept for reference ---
+# --- Previous classifier, for reference ---
 # def classify_spectrum(spectrum, wl, ratio_threshold=1.05):
 #     peaks, properties = find_peaks(spectrum, height=40, prominence=20, distance=10)
 #     widths_samples = peak_widths(spectrum, peaks, rel_height=0.5)[0]
