@@ -167,3 +167,8 @@ g2.plot_g2(result, 'g2_data/myfile.png')
 | g² window | ±100 ns | Correlation half-window |
 | g² bin | 1 ns | Time bin width |
 | Filter tolerance | ±2 nm | Acceptable calibration error |
+
+#Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows
+
+#PS C:\WINDOWS\system32> cd "C:\Users\Public\Shared Confocal Files\SPE_Automation"
+#PS C:\Users\Public\Shared Confocal Files\SPE_Automation> claude --dangerously-skip-permissions
