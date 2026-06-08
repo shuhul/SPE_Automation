@@ -27,6 +27,7 @@ import sgd
 import filter as fil
 import plotter
 import pl_spec_python as psp
+import autofocus
 
 # ============================================================================
 # PARAMETERS — edit these before each session
@@ -242,6 +243,12 @@ def main():
     sgd.sgd_init()
     fil.filter_init()
     fil.filter_on()
+    af_available = autofocus.autofocus_init()
+    if af_available:
+        print('Autofocus Z-stage initialised.')
+    else:
+        print('[WARNING] Autofocus Z-stage could not be initialised — '
+              'fine scans will proceed without autofocus.')
     print()
 
     # ── STEP 1: COARSE SCAN ───────────────────────────────────────────────────
@@ -300,6 +307,24 @@ def main():
 
         # ── STEP 2a: FINE SCAN ────────────────────────────────────────────────
         # Zoomed scan centred on the emitter to localise the brightest spot.
+        if af_available:
+            print(f'[AUTOFOCUS] Running autofocus at ({ex:.2f}, {ey:.2f})...')
+            af_result = autofocus.autofocus_on_emitter(
+                emitter_pos=(ex, ey),
+                grating=FINE_GRATING,
+                exposure_s=FINE_EXPOSURE_S,
+                center_wl=FINE_CENTER_WL,
+                current_user=CURRENT_USER,
+                foldername=FOLDERNAME,
+            )
+            if af_result is not None:
+                print(f'  Autofocus locked at {af_result["voltage"]:.2f} V '
+                      f'(532 nm intensity: {af_result["intensity"]:.0f})')
+            else:
+                print('  [WARNING] Autofocus failed — continuing with current Z position.')
+
+        if _stop or _stop_immediately:
+            break
         fine_type = f'fine_x{ex:.1f}_y{ey:.1f}'
         print(f'[STEP 2a] Fine scan  ({FINE_XDIM}x{FINE_YDIM} um, {FINE_DX} um step)...')
         _, status = run_scan(
@@ -338,13 +363,17 @@ def main():
                 best    = np.argmax([peak_map[iy, ix] for iy, ix in zip(iys_f, ixs_f)])
                 tx, ty  = fine_xs[ixs_f[best]], fine_ys[iys_f[best]]
             else:
-                # No classified pixels — fall back to global peak
-                iy_b, ix_b = np.unravel_index(np.argmax(peak_map), peak_map.shape)
-                tx, ty     = fine_xs[ix_b], fine_ys[iy_b]
+                # No classified pixels in fine scan — skip to next emitter
+                print(f'  Fine scan found no classified pixels for emitter '
+                      f'({ex:.2f}, {ey:.2f}) — skipping to next emitter.')
+                results.append((ex, ey, None, None, None, None, 'no fine classified'))
+                continue
         else:
-            iy_b, ix_b = np.unravel_index(np.argmax(peak_map), peak_map.shape)
-            tx, ty     = fine_xs[ix_b], fine_ys[iy_b]
-
+            # No classification file — skip to next emitter
+            print(f'  Fine scan produced no classification file for emitter '
+                  f'({ex:.2f}, {ey:.2f}) — skipping to next emitter.')
+            results.append((ex, ey, None, None, None, None, 'no fine classified'))
+            continue
         print(f'  Brightest spot: ({tx:.2f}, {ty:.2f})')
 
         # ── STEP 2b: LONG SCAN ────────────────────────────────────────────────
@@ -378,10 +407,10 @@ def main():
             results.append((ex, ey, tx, ty, None, None, 'no ZPL'))
             continue
 
-        if not had_classified_pixels:
-            print('  Fine scan had no classified pixels — skipping bandpass filter.')
-            results.append((ex, ey, tx, ty, target_wl, None, 'no classified'))
-            continue
+        # if not had_classified_pixels:
+        #     print('  Fine scan had no classified pixels — skipping bandpass filter.')
+        #     results.append((ex, ey, tx, ty, target_wl, None, 'no classified'))
+        #     continue
 
         angle = _angle_for_wavelength(target_wl)
         print(f'[STEP 2c] ZPL FWHM centre: {target_wl:.1f} nm — setting bandpass filter...')
@@ -428,7 +457,8 @@ def main():
     for i, (ex, ey, tx, ty, zpl, ang, status) in enumerate(results, 1):
         zpl_s = f'{zpl:.1f}' if zpl is not None else '—'
         ang_s = f'{ang:.1f}' if ang is not None else '—'
-        print(f'{i:<4} ({ex:.1f}, {ey:.1f}){"":<8} ({tx:.1f}, {ty:.1f}){"":<8} {zpl_s:<10} {ang_s:<12} {status}')
+        tgt_s = f'({tx:.1f}, {ty:.1f})' if tx is not None else '—'
+        print(f'{i:<4} ({ex:.1f}, {ey:.1f}){"":<8} {tgt_s:<18} {zpl_s:<10} {ang_s:<12} {status}')
 
     print('\n=== Automation complete ===')
 
@@ -444,6 +474,10 @@ if __name__ == '__main__':
                 fil.flip_down()
         except Exception as e:
             print(f'Error flipping down filter: {e}')
+        try:
+            autofocus.autofocus_shutdown()
+        except Exception as e:
+            print(f'Error shutting down autofocus Z-stage: {e}')
 
         try:
             sgd.sgd_off()
