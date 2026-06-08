@@ -28,6 +28,8 @@ import filter as fil
 import plotter
 import pl_spec_python as psp
 import autofocus
+import picoharp
+import g2 as g2mod
 
 # ============================================================================
 # PARAMETERS — edit these before each session
@@ -60,6 +62,11 @@ FINE_CENTER_WL    = 595
 # Long scan — single-point, high-exposure spectrum to measure ZPL precisely
 LONG_GRATING      = 600
 LONG_EXPOSURE_S   = 10.0
+
+# G2 measurement
+G2_TARGET_RECORDS = 1_000_000
+G2_TIME_NS        = 100.0
+G2_TIMEBIN_NS     = 1.0
 
 
 # ============================================================================
@@ -243,6 +250,7 @@ def main():
     sgd.sgd_init()
     fil.filter_init()
     fil.filter_on()
+    picoharp.ph_init()
     af_available = autofocus.autofocus_init()
     if af_available:
         print('Autofocus Z-stage initialised.')
@@ -266,6 +274,8 @@ def main():
     if _stop or _stop_immediately:
         print('Stopped.')
         return
+
+    plotter.save_plot(FOLDERNAME, 'coarse', data_folder=DATA_FOLDER)
 
     # Load coarse results — keep out/wl in memory for ZPL estimates later
     coarse_path = os.path.join(DATA_FOLDER, FOLDERNAME, 'coarse')
@@ -339,6 +349,7 @@ def main():
         if _stop or _stop_immediately:
             break
 
+        plotter.save_plot(FOLDERNAME, fine_type, data_folder=DATA_FOLDER)
         if MANUAL_PLOT_INTERACTION:
             plotter.open_heatmap(FOLDERNAME, fine_type, data_folder=DATA_FOLDER)
 
@@ -366,13 +377,13 @@ def main():
                 # No classified pixels in fine scan — skip to next emitter
                 print(f'  Fine scan found no classified pixels for emitter '
                       f'({ex:.2f}, {ey:.2f}) — skipping to next emitter.')
-                results.append((ex, ey, None, None, None, None, 'no fine classified'))
+                results.append((ex, ey, None, None, None, None, None, 'no fine classified'))
                 continue
         else:
             # No classification file — skip to next emitter
             print(f'  Fine scan produced no classification file for emitter '
                   f'({ex:.2f}, {ey:.2f}) — skipping to next emitter.')
-            results.append((ex, ey, None, None, None, None, 'no fine classified'))
+            results.append((ex, ey, None, None, None, None, None, 'no fine classified'))
             continue
         print(f'  Brightest spot: ({tx:.2f}, {ty:.2f})')
 
@@ -404,7 +415,7 @@ def main():
 
         if target_wl is None:
             print('  No emission peak found in long scan — skipping this emitter.')
-            results.append((ex, ey, tx, ty, None, None, 'no ZPL'))
+            results.append((ex, ey, tx, ty, None, None, None, 'no ZPL'))
             continue
 
         # if not had_classified_pixels:
@@ -416,7 +427,7 @@ def main():
         print(f'[STEP 2c] ZPL FWHM centre: {target_wl:.1f} nm — setting bandpass filter...')
         if angle is None:
             print(f'  No calibration data for {target_wl:.1f} nm — skipping filter.')
-            results.append((ex, ey, tx, ty, target_wl, None, 'no cal'))
+            results.append((ex, ey, tx, ty, target_wl, None, None, 'no cal'))
             continue
         fil.flip_up()
         _filter_is_up = True
@@ -442,23 +453,70 @@ def main():
             _filter_is_up = False
             break
 
-        results.append((ex, ey, tx, ty, target_wl, angle, 'filter set'))
-        # G2 measurement would run here
-        print('  G2 measurement skipped (not implemented yet).')
+        # ── STEP 2e: G2 MEASUREMENT ──────────────────────────────────────────
+        # Wait 1: user flips mirror to APD path
+        psp._send_telegram(CURRENT_USER,
+            f'Emitter {i+1}/{len(emitters)}: ZPL={target_wl:.1f} nm, '
+            f'filter at {angle:.1f} deg. '
+            f'Flip mirror to APD path, then press Enter in the terminal.')
+        input('  [G2] Flip mirror to APD path, press Enter when ready...')
+
+        # Count-rate preview — print a few readings so user can verify signal
+        print('  [G2] Count rates:')
+        for _ in range(4):
+            r0, r1 = picoharp.get_count_rates()
+            print(f'         Ch0: {r0:.2e} cps   Ch1: {r1:.2e} cps')
+            time.sleep(1.0)
+        print(f'  [G2] Target: {G2_TARGET_RECORDS:,} records')
+
+        # Wait 2: confirm before committing the acquisition
+        input('  [G2] Press Enter to start acquisition...')
+
+        g2_0 = None
+        g2_status = 'g2 done'
+        if not _stop and not _stop_immediately:
+            g2_folder = os.path.join(DATA_FOLDER, FOLDERNAME,
+                                     f'g2_x{tx:.1f}_y{ty:.1f}')
+            npz_path = picoharp.ph_acquire(G2_TARGET_RECORDS, out_folder=g2_folder)
+            if npz_path:
+                g2_result = g2mod.run(npz_path, out_folder=g2_folder,
+                                      g2time_ns=G2_TIME_NS, timebin_ns=G2_TIMEBIN_NS)
+                if g2_result['popt'] is not None:
+                    g2_0 = 1 - g2_result['popt'][1]
+                    print(f'  g²(0) = {g2_0:.3f}')
+                else:
+                    print('  g² fit did not converge.')
+                    g2_status = 'g2 no fit'
+            else:
+                print('  G2 acquisition returned no data.')
+                g2_status = 'g2 no data'
+        else:
+            g2_status = 'g2 skipped'
+
+        # Wait 3: user flips mirror back before moving to next emitter
+        g2_0_str = f'{g2_0:.3f}' if g2_0 is not None else 'no fit'
+        psp._send_telegram(CURRENT_USER,
+            f'Emitter {i+1}/{len(emitters)} G2 done. '
+            f'g²(0) = {g2_0_str}. '
+            f'Flip mirror back to spectrometer path, then press Enter.')
+        input('  [G2] Flip mirror back to spectrometer path, press Enter to continue...')
+
         fil.flip_down()
         _filter_is_up = False
+        results.append((ex, ey, tx, ty, target_wl, angle, g2_0, g2_status))
 
     fil.filter_off()
 
     # ── SUMMARY TABLE ─────────────────────────────────────────────────────────
     print('\n=== Results Summary ===')
-    print(f'{"#":<4} {"Coarse (x,y)":<18} {"Target (x,y)":<18} {"ZPL (nm)":<10} {"Angle (deg)":<12} {"Status"}')
-    print('-' * 74)
-    for i, (ex, ey, tx, ty, zpl, ang, status) in enumerate(results, 1):
+    print(f'{"#":<4} {"Coarse (x,y)":<18} {"Target (x,y)":<18} {"ZPL (nm)":<10} {"Angle (deg)":<12} {"g²(0)":<8} {"Status"}')
+    print('-' * 84)
+    for i, (ex, ey, tx, ty, zpl, ang, g2_0, status) in enumerate(results, 1):
         zpl_s = f'{zpl:.1f}' if zpl is not None else '—'
         ang_s = f'{ang:.1f}' if ang is not None else '—'
         tgt_s = f'({tx:.1f}, {ty:.1f})' if tx is not None else '—'
-        print(f'{i:<4} ({ex:.1f}, {ey:.1f}){"":<8} {tgt_s:<18} {zpl_s:<10} {ang_s:<12} {status}')
+        g2_s  = f'{g2_0:.3f}' if g2_0 is not None else '—'
+        print(f'{i:<4} ({ex:.1f}, {ey:.1f}){"":<8} {tgt_s:<18} {zpl_s:<10} {ang_s:<12} {g2_s:<8} {status}')
 
     print('\n=== Automation complete ===')
 
@@ -474,6 +532,11 @@ if __name__ == '__main__':
                 fil.flip_down()
         except Exception as e:
             print(f'Error flipping down filter: {e}')
+        try:
+            picoharp.ph_close()
+        except Exception as e:
+            print(f'Error closing PicoHarp: {e}')
+
         try:
             autofocus.autofocus_shutdown()
         except Exception as e:

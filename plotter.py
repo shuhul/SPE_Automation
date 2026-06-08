@@ -10,7 +10,7 @@ def edges_from_centers(coords):
     return edges
 
 def save_plot(foldername, scan_type, data_folder='data'):
-    path = f'data/{foldername}/{scan_type}'
+    path = os.path.join(data_folder, foldername, scan_type)
     try:
         intensities = np.load(f'{path}/out.npy')
         wl = np.load(f'{path}/wl.npy')
