@@ -779,3 +779,59 @@ Exception rethrown at [0]:
 2026-06-04 16:11:34,699 INFO Connected to LightField. Experiment: 'PL'
 2026-06-04 16:15:40,922 INFO Setup complete, LightField ready.
 2026-06-04 16:17:09,380 INFO Setup complete, LightField ready.
+2026-06-04 16:38:04,436 WARNING LightField IPC dropped — attempting auto-reconnect...
+2026-06-04 16:38:21,887 INFO Connected to LightField. Experiment: 'PL'
+2026-06-04 16:38:21,927 INFO Setup complete, LightField ready.
+2026-06-04 16:39:50,253 INFO Setup complete, LightField ready.
+2026-06-04 16:40:11,222 INFO Setup complete, LightField ready.
+2026-06-04 16:45:32,855 WARNING LightField IPC dropped — attempting auto-reconnect...
+2026-06-04 16:45:49,886 INFO Connected to LightField. Experiment: 'PL'
+2026-06-04 16:45:49,910 INFO Setup complete, LightField ready.
+2026-06-04 18:02:32,584 INFO Setup complete, LightField ready.
+2026-06-05 12:31:50,966 INFO Setup complete, LightField ready.
+2026-06-05 12:32:04,538 INFO Shutdown command received.
+2026-06-05 12:32:05,867 INFO LightField Automation disposed cleanly.
+2026-06-05 12:32:28,358 INFO LightField bridge starting...
+2026-06-05 12:32:28,372 INFO Bridge listening on localhost:27028
+2026-06-05 12:32:52,345 INFO Connected to LightField. Experiment: 'PL'
+2026-06-05 12:33:21,726 INFO Setup complete, LightField ready.
+2026-06-05 12:34:50,165 INFO Setup complete, LightField ready.
+2026-06-05 12:37:33,364 INFO Setup complete, LightField ready.
+2026-06-05 17:13:34,854 INFO Setup complete, LightField ready.
+2026-06-08 11:20:00,952 INFO Setup complete, LightField ready.
+2026-06-08 11:20:12,184 INFO Setup complete, LightField ready.
+2026-06-08 11:20:35,796 INFO Shutdown command received.
+2026-06-08 11:20:37,004 INFO LightField Automation disposed cleanly.
+2026-06-08 12:53:02,134 INFO LightField bridge starting...
+2026-06-08 12:53:02,148 INFO Bridge listening on localhost:27028
+2026-06-08 12:53:26,036 INFO Connected to LightField. Experiment: 'Untitled Experiment'
+2026-06-08 12:53:57,078 INFO Setup complete, LightField ready.
+2026-06-08 12:58:34,627 INFO Shutdown command received.
+2026-06-08 12:58:36,192 INFO LightField Automation disposed cleanly.
+2026-06-08 12:59:12,055 INFO LightField bridge starting...
+2026-06-08 12:59:12,070 INFO Bridge listening on localhost:27028
+2026-06-08 12:59:30,602 INFO Connected to LightField. Experiment: 'Experiment1'
+2026-06-08 12:59:39,202 INFO Setup complete, LightField ready.
+2026-06-08 13:09:35,547 INFO Shutdown command received.
+2026-06-08 13:09:36,673 INFO LightField Automation disposed cleanly.
+2026-06-08 13:22:07,617 INFO LightField bridge starting...
+2026-06-08 13:22:07,628 INFO Bridge listening on localhost:27028
+2026-06-08 13:23:24,355 ERROR Failed to connect to LightField: Failed to read from an IPC Port: The pipe has been ended.
+
+
+Server stack trace: 
+   at System.Runtime.Remoting.Channels.Ipc.IpcPort.Read(Byte[] data, Int32 offset, Int32 length)
+   at System.Runtime.Remoting.Channels.SocketHandler.ReadFromSocket(Byte[] buffer, Int32 offset, Int32 count)
+   at System.Runtime.Remoting.Channels.SocketHandler.Read(Byte[] buffer, Int32 offset, Int32 count)
+   at System.Runtime.Remoting.Channels.SocketHandler.ReadAndMatchFourBytes(Byte[] buffer)
+   at System.Runtime.Remoting.Channels.Tcp.TcpSocketHandler.ReadAndMatchPreamble()
+   at System.Runtime.Remoting.Channels.Tcp.TcpSocketHandler.ReadVersionAndOperation(UInt16& operation)
+   at System.Runtime.Remoting.Channels.Ipc.IpcClientHandler.ReadHeaders()
+   at System.Runtime.Remoting.Channels.Ipc.IpcClientTransportSink.ProcessMessage(IMessage msg, ITransportHeaders requestHeaders, Stream requestStream, ITransportHeaders& responseHeaders, Stream& responseStream)
+   at System.Runtime.Remoting.Channels.BinaryClientFormatterSink.SyncProcessMessage(IMessage msg)
+
+Exception rethrown at [0]: 
+   at System.Runtime.Remoting.Proxies.RealProxy.HandleReturnMessage(IMessage reqMsg, IMessage retMsg)
+   at System.Runtime.Remoting.Proxies.RealProxy.PrivateInvoke(MessageData& msgData, Int32 type)
+   at PrincetonInstruments.LightField.AddIns.Contracts.ILightFieldAutomationContract.InitializeAutomation(Boolean isVisible, IListContract`1 commandLine)
+   at PrincetonInstruments.LightField.Automation.Automation..ctor(Boolean isApplicationVisible, List`1 commandLineOptions)
