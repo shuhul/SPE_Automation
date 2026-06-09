@@ -18,8 +18,12 @@ import numpy as np
 from datetime import datetime
 
 import matplotlib
-if not MANUAL_PLOT_INTERACTION:
-    matplotlib.use('Agg')
+# Always start on the non-interactive Agg backend. plotter.open_heatmap() /
+# select_emitters() switch to QtAgg only while their window is open and
+# switch back to Agg afterwards. Leaving QtAgg active across input() calls
+# triggers a stale QSocketNotifier in matplotlib's Qt backend on Windows
+# (OSError: [WinError 10038] in _may_clear_sock).
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import lf_spec
@@ -35,14 +39,14 @@ import g2 as g2mod
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f2-500uW-1s-fullauto'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f2-500uW-1s-fullauto-1'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-05-28_18-08-36'   # bandpass calibration subfolder name
 
 # Coarse scan — wide area to locate candidate emitters
-COARSE_XDIM       = 20   # um
-COARSE_YDIM       = 20   # um
+COARSE_XDIM       = 15   # um
+COARSE_YDIM       = 15   # um
 COARSE_DX         = 0.5    # um step size
 COARSE_DY         = 0.5
 COARSE_CENTER     = (0, 0)
@@ -56,8 +60,8 @@ FINE_YDIM         = 3 # 3.0
 FINE_DX           = 0.25 # 0.25
 FINE_DY           = 0.25 # 0.25
 FINE_GRATING      = 150
-FINE_EXPOSURE_S   = 2.0
-FINE_CENTER_WL    = 595
+FINE_EXPOSURE_S   = 1.0
+FINE_CENTER_WL    = 700
 
 # Long scan — single-point, high-exposure spectrum to measure ZPL precisely
 LONG_GRATING      = 600
@@ -66,7 +70,7 @@ LONG_EXPOSURE_S   = 10.0
 # G2 measurement
 G2_TARGET_RECORDS = 1_000_000
 G2_TIME_NS        = 100.0
-G2_TIMEBIN_NS     = 1.0
+G2_TIMEBIN_NS     = 0.25
 
 
 # ============================================================================

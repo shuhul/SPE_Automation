@@ -927,11 +927,13 @@ def select_emitters(foldername, scan_type,
     Returns list of (x, y) tuples for selected emitters."""
     import matplotlib
     from matplotlib.lines import Line2D
+    _switched_backend = False
     if matplotlib.get_backend().lower() == 'agg':
         try:
             plt.switch_backend('QtAgg')
         except Exception:
             plt.switch_backend('TkAgg')
+        _switched_backend = True
 
     # --- Check if file exists to prevent immediate crash ---
     base_path = os.path.join(data_folder, foldername, scan_type)
@@ -1214,17 +1216,28 @@ def select_emitters(foldername, scan_type,
     plt.tight_layout()
     plt.show(block=True)
 
+    if _switched_backend:
+        plt.switch_backend('Agg')
+
     return [(float(emitter_xs[i]), float(emitter_ys[i])) for i in range(n_emitters) if selected[i]]
 
 
 def open_heatmap(foldername, scan_type, data_folder='data', **kwargs):
     """Like plot_heatmap_manual but forces an interactive window even from scripts.
-    Temporarily switches away from Agg if needed."""
+    Temporarily switches away from Agg if needed, and switches back to Agg
+    once the window is closed (avoids a stale Qt socket notifier from
+    plt.show(block=True) firing during a later input() call on Windows)."""
     import matplotlib
     backend = matplotlib.get_backend()
+    switched = False
     if backend.lower() == 'agg':
         try:
             plt.switch_backend('QtAgg')
         except Exception:
             plt.switch_backend('TkAgg')
-    plot_heatmap_manual(foldername, scan_type, data_folder=data_folder, **kwargs)
+        switched = True
+    try:
+        plot_heatmap_manual(foldername, scan_type, data_folder=data_folder, **kwargs)
+    finally:
+        if switched:
+            plt.switch_backend('Agg')
