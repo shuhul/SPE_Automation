@@ -30,6 +30,7 @@ from Thorlabs.MotionControl.Benchtop.PiezoCLI import BenchtopPiezo
 from System import Decimal
 
 import lf_spec
+import sgd
 import pl_spec_python as psp
 
 # ============================================================================
@@ -227,7 +228,7 @@ def get_532nm_peak_intensity(spectrum, wl):
 # PHASE 1a: SYMMETRIC SCAN ± 10V @ 1V STEPS
 # ============================================================================
 
-def phase1a_symmetric_scan(center_x, center_y, grating, exposure_s, center_wl):
+def phase1a_symmetric_scan(center_x, center_y, grating, exposure_s, center_wl, stop_flag=None):
     """Phase 1a: Scan ±10V from current voltage at 1V steps."""
     _log_debug(f"\n[PHASE 1a] Symmetric scan ±{PHASE1A_OFFSET}V @ {PHASE1A_STEP}V steps")
 
@@ -251,9 +252,13 @@ def phase1a_symmetric_scan(center_x, center_y, grating, exposure_s, center_wl):
     lf_spec.lf_setup(exposure_s=exposure_s, center_wavelength=center_wl, grating=grating)
 
     for i, voltage in enumerate(voltages):
+        if stop_flag and stop_flag():
+            _log_debug("Emergency stop requested — aborting Phase 1a scan early.")
+            break
+
         v = float(voltage)
         _log_debug(f"  [{i+1}/{len(voltages)}] Setting voltage to {v:.2f}V...")
-        
+
         if not set_z_voltage(v):
             _log_debug(f"    ERROR: Could not set voltage; skipping.")
             intensities.append(-1.0)
@@ -274,6 +279,7 @@ def phase1a_symmetric_scan(center_x, center_y, grating, exposure_s, center_wl):
             _log_debug(f"    ERROR: Acquisition failed: {e}")
             intensities.append(-1.0)
 
+    voltages = voltages[:len(intensities)]
     valid_mask = np.array(intensities) >= 0
     if not np.any(valid_mask):
         _log_debug("ERROR: No valid spectra acquired in Phase 1a")
@@ -314,7 +320,7 @@ def phase1a_symmetric_scan(center_x, center_y, grating, exposure_s, center_wl):
 # ============================================================================
 
 def phase1b_directional_scan(center_x, center_y, grating, exposure_s, center_wl,
-                              boundary_voltage, boundary_direction):
+                              boundary_voltage, boundary_direction, stop_flag=None):
     """Phase 1b: Extend in direction of boundary until peak found."""
     _log_debug(f"\n[PHASE 1b] Directional scan from {boundary_voltage:.2f}V in '{boundary_direction}' direction")
 
@@ -333,6 +339,13 @@ def phase1b_directional_scan(center_x, center_y, grating, exposure_s, center_wl,
     lf_spec.lf_setup(exposure_s=exposure_s, center_wavelength=center_wl, grating=grating)
 
     while step_count < max_steps and not peak_found:
+        if stop_flag and stop_flag():
+            _log_debug("Emergency stop requested — aborting Phase 1b scan early.")
+            if scan_intensities:
+                peak_voltage = float(scan_voltages[-1])
+                peak_intensity = float(scan_intensities[-1])
+            break
+
         voltage = boundary_voltage + (step_count + 1) * PHASE1B_STEP * direction_sign
 
         if voltage < Z_MIN_VOLTAGE or voltage > Z_MAX_VOLTAGE:
@@ -400,7 +413,8 @@ def phase1b_directional_scan(center_x, center_y, grating, exposure_s, center_wl,
 # PHASE 2: FINE SCAN ± 1V @ 0.1V STEPS
 # ============================================================================
 
-def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_peak_voltage):
+def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_peak_voltage,
+                      stop_flag=None):
     """Phase 2: Fine scan ±1V around coarse peak at 0.1V steps."""
     
     coarse_peak_voltage = float(coarse_peak_voltage)
@@ -419,6 +433,10 @@ def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_
     lf_spec.lf_setup(exposure_s=exposure_s, center_wavelength=center_wl, grating=grating)
 
     for i, voltage in enumerate(voltages):
+        if stop_flag and stop_flag():
+            _log_debug("Emergency stop requested — aborting Phase 2 scan early.")
+            break
+
         v = float(voltage)
         _log_debug(f"  [{i+1}/{len(voltages)}] Setting voltage to {v:.2f}V...")
 
@@ -444,6 +462,7 @@ def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_
             _log_debug(f"    ERROR: Acquisition failed: {e}")
             intensities.append(-1.0)
 
+    voltages = voltages[:len(intensities)]
     valid_mask = np.array(intensities) >= 0
     if not np.any(valid_mask):
         _log_debug("ERROR: No valid spectra acquired in Phase 2")
@@ -470,7 +489,7 @@ def phase2_fine_scan(center_x, center_y, grating, exposure_s, center_wl, coarse_
 # ============================================================================
 
 def autofocus_on_emitter(emitter_pos, grating, exposure_s, center_wl,
-                         current_user=None, foldername=None):
+                         current_user=None, foldername=None, stop_flag=None):
     """Main autofocus routine: Phase 1a → Phase 1b (if needed) → Phase 2 → Lock focus."""
     if not _autofocus_enabled:
         _log_debug("WARNING: Autofocus not initialized")
@@ -481,66 +500,91 @@ def autofocus_on_emitter(emitter_pos, grating, exposure_s, center_wl,
     _log_debug(f"AUTOFOCUS on emitter at ({ex:.2f}, {ey:.2f}) um")
     _log_debug(f"{'='*70}")
 
-    phase1a_result = phase1a_symmetric_scan(ex, ey, grating, exposure_s, center_wl)
+    # Point the SGD scanner at the emitter so the autofocus measurements
+    # (and the resulting Z-lock) are actually for this position.
+    _log_debug(f"Moving SGD scanner to ({ex:.2f}, {ey:.2f}) um for autofocus...")
+    sgd.sgd_on()
+    sgd.set_position(ex, ey, silent=True)
 
-    if phase1a_result is None:
-        error_msg = "Autofocus Phase 1a failed: No spectra acquired"
-        _log_debug(f"ERROR: {error_msg}")
-        if current_user:
-            psp._send_telegram(current_user, f"⚠️ Focus Error: {error_msg}")
-        return None
+    try:
+        phase1a_result = phase1a_symmetric_scan(ex, ey, grating, exposure_s, center_wl, stop_flag=stop_flag)
 
-    coarse_peak_voltage = phase1a_result['peak_voltage']
-
-    if phase1a_result['peak_at_boundary']:
-        phase1b_result = phase1b_directional_scan(
-            ex, ey, grating, exposure_s, center_wl,
-            phase1a_result['peak_voltage'],
-            phase1a_result['boundary_direction']
-        )
-
-        if phase1b_result is None:
-            error_msg = "Autofocus Phase 1b failed: No spectra acquired during directional scan"
+        if phase1a_result is None:
+            error_msg = "Autofocus Phase 1a failed: No spectra acquired"
             _log_debug(f"ERROR: {error_msg}")
             if current_user:
                 psp._send_telegram(current_user, f"⚠️ Focus Error: {error_msg}")
             return None
 
-        coarse_peak_voltage = phase1b_result['peak_voltage']
+        coarse_peak_voltage = phase1a_result['peak_voltage']
+        coarse_peak_intensity = phase1a_result['peak_intensity']
 
-    phase2_result = phase2_fine_scan(
-        ex, ey, grating, exposure_s, center_wl,
-        coarse_peak_voltage
-    )
+        if stop_flag and stop_flag():
+            _log_debug("Emergency stop requested — locking focus at best voltage found so far.")
+            return _lock_focus(emitter_pos, coarse_peak_voltage, coarse_peak_intensity, current_user)
 
-    if phase2_result is None:
-        error_msg = "Autofocus Phase 2 failed: No spectra acquired during fine scan"
-        _log_debug(f"ERROR: {error_msg}")
-        if current_user:
-            psp._send_telegram(current_user, f"⚠️ Focus Error: {error_msg}")
-        return None
+        if phase1a_result['peak_at_boundary']:
+            phase1b_result = phase1b_directional_scan(
+                ex, ey, grating, exposure_s, center_wl,
+                phase1a_result['peak_voltage'],
+                phase1a_result['boundary_direction'],
+                stop_flag=stop_flag
+            )
 
-    final_voltage = phase2_result['peak_voltage']
-    final_intensity = phase2_result['peak_intensity']
+            if phase1b_result is None:
+                error_msg = "Autofocus Phase 1b failed: No spectra acquired during directional scan"
+                _log_debug(f"ERROR: {error_msg}")
+                if current_user:
+                    psp._send_telegram(current_user, f"⚠️ Focus Error: {error_msg}")
+                return None
 
-    _log_debug(f"\n[LOCK] Setting Z-voltage to {final_voltage:.2f}V...")
+            coarse_peak_voltage = phase1b_result['peak_voltage']
+            coarse_peak_intensity = phase1b_result['peak_intensity']
 
-    if not set_z_voltage(final_voltage):
-        error_msg = f"Failed to lock focus at {final_voltage:.2f}V"
+            if stop_flag and stop_flag():
+                _log_debug("Emergency stop requested — locking focus at best voltage found so far.")
+                return _lock_focus(emitter_pos, coarse_peak_voltage, coarse_peak_intensity, current_user)
+
+        phase2_result = phase2_fine_scan(
+            ex, ey, grating, exposure_s, center_wl,
+            coarse_peak_voltage, stop_flag=stop_flag
+        )
+
+        if phase2_result is None:
+            error_msg = "Autofocus Phase 2 failed: No spectra acquired during fine scan"
+            _log_debug(f"ERROR: {error_msg}")
+            if current_user:
+                psp._send_telegram(current_user, f"⚠️ Focus Error: {error_msg}")
+            return None
+
+        final_voltage = phase2_result['peak_voltage']
+        final_intensity = phase2_result['peak_intensity']
+
+        return _lock_focus(emitter_pos, final_voltage, final_intensity, current_user)
+    finally:
+        sgd.sgd_off()
+
+
+def _lock_focus(emitter_pos, voltage, intensity, current_user=None):
+    """Set the Z-stage to `voltage` and report success/failure."""
+    _log_debug(f"\n[LOCK] Setting Z-voltage to {voltage:.2f}V...")
+
+    if not set_z_voltage(voltage):
+        error_msg = f"Failed to lock focus at {voltage:.2f}V"
         _log_debug(f"ERROR: {error_msg}")
         if current_user:
             psp._send_telegram(current_user, f"⚠️ Focus Error: {error_msg}")
         return None
 
     time.sleep(0.5)
-    _log_debug(f"✓ Focus locked at {final_voltage:.2f}V (532nm intensity: {final_intensity:.1f})")
+    _log_debug(f"✓ Focus locked at {voltage:.2f}V (532nm intensity: {intensity:.1f})")
 
-    _log_results(emitter_pos, final_voltage, final_intensity, 'locked')
+    _log_results(emitter_pos, voltage, intensity, 'locked')
     _log_debug(f"{'='*70}\n")
 
     return {
-        'voltage': final_voltage,
-        'intensity': final_intensity,
+        'voltage': voltage,
+        'intensity': intensity,
         'success': True,
     }
 

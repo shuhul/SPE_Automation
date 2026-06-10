@@ -61,7 +61,8 @@ def get_count_rates():
     return r0.value, r1.value
 
 
-def ph_acquire(target_records, acq_time_s=10000, out_folder='g2_data', progress_signal=None):
+def ph_acquire(target_records, acq_time_s=10000, out_folder='g2_data', progress_signal=None,
+               stop_flag=None):
     """
     Run T2 acquisition until target_records collected or acq_time_s elapsed.
     Parses raw TTTR records and saves ch0/ch1 photon times to a timestamped .npz.
@@ -71,6 +72,8 @@ def ph_acquire(target_records, acq_time_s=10000, out_folder='g2_data', progress_
         acq_time_s      : hard time limit in seconds (safety cutoff)
         out_folder      : directory to save output .npz
         progress_signal : optional PyQt signal(int) for GUI progress updates
+        stop_flag       : optional callable; if it returns True, stop early
+                          and save whatever has been collected so far.
 
     Returns:
         Path to the saved .npz file, or None if no data was collected.
@@ -91,6 +94,10 @@ def ph_acquire(target_records, acq_time_s=10000, out_folder='g2_data', progress_
 
     try:
         while True:
+            if stop_flag is not None and stop_flag():
+                print("\nEmergency stop requested — stopping G2 acquisition early.")
+                break
+
             PHLIB.PH_ReadFiFo(
                 DEV_IDX,
                 ctypes.cast(buffer, ctypes.POINTER(ctypes.c_uint32)),

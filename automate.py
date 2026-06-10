@@ -39,7 +39,7 @@ import g2 as g2mod
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f2-500uW-1s-fullauto-1'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f2-500uW-1s-fullauto-2'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-05-28_18-08-36'   # bandpass calibration subfolder name
@@ -95,6 +95,7 @@ _stop_immediately = False
 _keyboard_monitor_running = False
 _monitor_thread = None
 _filter_is_up = False
+_monitor_paused = threading.Event()
 
 def _keyboard_monitor():
     """Monitor keyboard for Ctrl+X to trigger emergency stop."""
@@ -103,6 +104,9 @@ def _keyboard_monitor():
         import msvcrt
         print('[INFO] Keyboard monitor started (Ctrl+X = emergency stop, q = quit)')
         while _keyboard_monitor_running:
+            if _monitor_paused.is_set():
+                time.sleep(0.05)
+                continue
             try:
                 if msvcrt.kbhit():
                     key = msvcrt.getch()
@@ -122,6 +126,29 @@ def _keyboard_monitor():
         print('[INFO] msvcrt not available - keyboard monitor disabled')
     except Exception as e:
         print(f'[ERROR] Keyboard monitor failed: {e}')
+
+
+def _flush_keys():
+    """Discard any keystrokes buffered in the console (avoids stale Ctrl+X/q
+    triggers or stolen Enter presses around input() prompts)."""
+    try:
+        import msvcrt
+        while msvcrt.kbhit():
+            msvcrt.getch()
+    except ImportError:
+        pass
+
+
+def _paused_input(prompt):
+    """input() with the keyboard monitor paused, so it can't steal the
+    keystrokes (Enter, etc.) meant for this prompt."""
+    _monitor_paused.set()
+    _flush_keys()
+    try:
+        return input(prompt)
+    finally:
+        _flush_keys()
+        _monitor_paused.clear()
 
 # ============================================================================
 # SPECTRUM HELPERS
@@ -279,6 +306,7 @@ def main():
             center_wl=COARSE_CENTER_WL,
             current_user=CURRENT_USER,
             foldername=FOLDERNAME,
+            stop_flag=lambda: _stop or _stop_immediately,
         )
         if af_result is not None:
             print(f'  Autofocus locked at {af_result["voltage"]:.2f} V '
@@ -351,6 +379,7 @@ def main():
                 center_wl=FINE_CENTER_WL,
                 current_user=CURRENT_USER,
                 foldername=FOLDERNAME,
+                stop_flag=lambda: _stop or _stop_immediately,
             )
             if af_result is not None:
                 print(f'  Autofocus locked at {af_result["voltage"]:.2f} V '
@@ -489,7 +518,7 @@ def main():
                 f'Emitter {i+1}/{len(emitters)}: ZPL={target_wl:.1f} nm, '
                 f'filter at {angle:.1f} deg. '
                 f'Flip mirror to APD path, then press Enter in the terminal.')
-            input('  [G2] Flip mirror to APD path, press Enter when ready...')
+            _paused_input('  [G2] Flip mirror to APD path, press Enter when ready...')
 
             # Count-rate preview — print a few readings so user can verify signal
             print('  [G2] Count rates:')
@@ -500,13 +529,14 @@ def main():
             print(f'  [G2] Target: {G2_TARGET_RECORDS:,} records')
 
             # Wait 2: confirm before committing the acquisition
-            input('  [G2] Press Enter to start acquisition...')
+            _paused_input('  [G2] Press Enter to start acquisition...')
 
             g2_status = 'g2 done'
             if not _stop and not _stop_immediately:
                 g2_folder = os.path.join(DATA_FOLDER, FOLDERNAME,
                                          f'g2_x{tx:.1f}_y{ty:.1f}')
-                npz_path = picoharp.ph_acquire(G2_TARGET_RECORDS, out_folder=g2_folder)
+                npz_path = picoharp.ph_acquire(G2_TARGET_RECORDS, out_folder=g2_folder,
+                                               stop_flag=lambda: _stop or _stop_immediately)
                 if npz_path:
                     g2_result = g2mod.run(npz_path, out_folder=g2_folder,
                                           g2time_ns=G2_TIME_NS, timebin_ns=G2_TIMEBIN_NS)
@@ -528,7 +558,7 @@ def main():
                 f'Emitter {i+1}/{len(emitters)} G2 done. '
                 f'g²(0) = {g2_0_str}. '
                 f'Flip mirror back to spectrometer path, then press Enter.')
-            input('  [G2] Flip mirror back to spectrometer path, press Enter to continue...')
+            _paused_input('  [G2] Flip mirror back to spectrometer path, press Enter to continue...')
 
         fil.flip_down()
         _filter_is_up = False
