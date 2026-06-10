@@ -1024,3 +1024,77 @@ Exception rethrown at [0]:
 2026-06-10 13:34:40,142 INFO Setup complete, LightField ready.
 2026-06-10 13:39:54,281 INFO Shutdown command received.
 2026-06-10 13:39:55,830 INFO LightField Automation disposed cleanly.
+2026-06-10 13:42:42,931 INFO LightField bridge starting...
+2026-06-10 13:42:42,949 INFO Bridge listening on localhost:27028
+2026-06-10 13:43:00,639 INFO Connected to LightField. Experiment: 'PL'
+2026-06-10 13:43:16,348 INFO Setup complete, LightField ready.
+2026-06-10 13:44:24,929 INFO Setup complete, LightField ready.
+2026-06-10 13:45:33,603 INFO Setup complete, LightField ready.
+2026-06-10 13:51:15,400 INFO Setup complete, LightField ready.
+2026-06-10 13:52:22,989 INFO Setup complete, LightField ready.
+2026-06-10 13:53:31,478 INFO Setup complete, LightField ready.
+2026-06-10 13:57:51,759 INFO Setup complete, LightField ready.
+2026-06-10 13:58:04,183 INFO Setup complete, LightField ready.
+2026-06-10 14:06:41,891 INFO Setup complete, LightField ready.
+2026-06-10 14:07:49,515 INFO Setup complete, LightField ready.
+2026-06-10 14:08:57,981 INFO Setup complete, LightField ready.
+2026-06-10 14:15:11,835 INFO Setup complete, LightField ready.
+2026-06-10 14:15:25,420 INFO Setup complete, LightField ready.
+2026-06-10 14:22:50,986 INFO Shutdown command received.
+2026-06-10 14:22:52,170 INFO LightField Automation disposed cleanly.
+2026-06-10 14:31:46,600 INFO LightField bridge starting...
+2026-06-10 14:31:46,610 INFO Bridge listening on localhost:27028
+2026-06-10 14:31:57,714 INFO Connected to LightField. Experiment: 'Untitled Experiment'
+2026-06-10 14:32:22,762 ERROR Command "setup" failed (marking LF disconnected): Failed to read from an IPC Port: The pipe has been ended.
+
+
+Server stack trace: 
+   at System.Runtime.Remoting.Channels.Ipc.IpcPort.Read(Byte[] data, Int32 offset, Int32 length)
+   at System.Runtime.Remoting.Channels.SocketHandler.ReadFromSocket(Byte[] buffer, Int32 offset, Int32 count)
+   at System.Runtime.Remoting.Channels.SocketHandler.Read(Byte[] buffer, Int32 offset, Int32 count)
+   at System.Runtime.Remoting.Channels.SocketHandler.ReadAndMatchFourBytes(Byte[] buffer)
+   at System.Runtime.Remoting.Channels.Tcp.TcpSocketHandler.ReadAndMatchPreamble()
+   at System.Runtime.Remoting.Channels.Tcp.TcpSocketHandler.ReadVersionAndOperation(UInt16& operation)
+   at System.Runtime.Remoting.Channels.Ipc.IpcClientHandler.ReadHeaders()
+   at System.Runtime.Remoting.Channels.Ipc.IpcClientTransportSink.ProcessMessage(IMessage msg, ITransportHeaders requestHeaders, Stream requestStream, ITransportHeaders& responseHeaders, Stream& responseStream)
+   at System.Runtime.Remoting.Channels.BinaryClientFormatterSink.SyncProcessMessage(IMessage msg)
+
+Exception rethrown at [0]: 
+   at System.Runtime.Remoting.Proxies.RealProxy.HandleReturnMessage(IMessage reqMsg, IMessage retMsg)
+   at System.Runtime.Remoting.Proxies.RealProxy.PrivateInvoke(MessageData& msgData, Int32 type)
+   at PrincetonInstruments.LightField.AddIns.Contracts.IExperimentContract.SetValue(String setting, Object value)
+   at PrincetonInstruments.LightField.AddIns.HostSideAdapters.IExperimentContractToViewHostAdapter.SetValue(String setting, Object value)
+2026-06-10 14:32:25,386 INFO Shutdown command received.
+2026-06-10 14:32:25,590 ERROR Error during Dispose: Failed to connect to an IPC Port: The system cannot find the file specified.
+ 
+
+Server stack trace: 
+   at System.Runtime.Remoting.Channels.Ipc.IpcPort.Connect(String portName, Boolean secure, TokenImpersonationLevel impersonationLevel, Int32 timeout)
+   at System.Runtime.Remoting.Channels.Ipc.ConnectionCache.GetConnection(String portName, Boolean secure, TokenImpersonationLevel level, Int32 timeout)
+   at System.Runtime.Remoting.Channels.Ipc.IpcClientTransportSink.ProcessMessage(IMessage msg, ITransportHeaders requestHeaders, Stream requestStream, ITransportHeaders& responseHeaders, Stream& responseStream)
+   at System.Runtime.Remoting.Channels.BinaryClientFormatterSink.SyncProcessMessage(IMessage msg)
+
+Exception rethrown at [0]: 
+   at System.Runtime.Remoting.Proxies.RealProxy.HandleReturnMessage(IMessage reqMsg, IMessage retMsg)
+   at System.Runtime.Remoting.Proxies.RealProxy.PrivateInvoke(MessageData& msgData, Int32 type)
+   at PrincetonInstruments.LightField.AddIns.Contracts.ILightFieldAutomationContract.RemoveLightFieldClosedHandler(ILightFieldClosedEventArgsHandler handler)
+   at PrincetonInstruments.LightField.AddIns.HostSideAdapters.ILightFieldAutomationContractToViewHostAdapter.remove_LightFieldClosed(EventHandler`1 value)
+   at PrincetonInstruments.LightField.Automation.Automation.DisposeImpl(Boolean fromClosed)
+2026-06-10 14:33:24,901 INFO LightField bridge starting...
+2026-06-10 14:33:24,912 INFO Bridge listening on localhost:27028
+2026-06-10 14:33:38,400 INFO Connected to LightField. Experiment: 'PL'
+2026-06-10 14:34:17,145 INFO Setup complete, LightField ready.
+2026-06-10 14:35:24,895 INFO Setup complete, LightField ready.
+2026-06-10 14:36:33,294 INFO Setup complete, LightField ready.
+2026-06-10 16:00:23,439 INFO Setup complete, LightField ready.
+2026-06-10 16:01:31,037 INFO Setup complete, LightField ready.
+2026-06-10 16:02:39,756 INFO Setup complete, LightField ready.
+2026-06-10 16:15:02,075 INFO Setup complete, LightField ready.
+2026-06-10 16:15:16,115 INFO Setup complete, LightField ready.
+2026-06-10 16:28:53,914 INFO Setup complete, LightField ready.
+2026-06-10 16:30:01,290 INFO Setup complete, LightField ready.
+2026-06-10 16:31:09,780 INFO Setup complete, LightField ready.
+2026-06-10 16:39:07,539 INFO Setup complete, LightField ready.
+2026-06-10 16:39:20,027 INFO Setup complete, LightField ready.
+2026-06-10 16:49:36,765 INFO Shutdown command received.
+2026-06-10 16:49:38,501 INFO LightField Automation disposed cleanly.
