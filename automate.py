@@ -45,11 +45,11 @@ DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-05-28_18-08-36'   # bandpass calibration subfolder name
 
 # Coarse scan — wide area to locate candidate emitters
-COARSE_XDIM       = 15   # um
-COARSE_YDIM       = 15   # um
+COARSE_XDIM       = 5   # um
+COARSE_YDIM       = 5   # um
 COARSE_DX         = 0.5    # um step size
 COARSE_DY         = 0.5
-COARSE_CENTER     = (0, 0)
+COARSE_CENTER     = (-3.00, -3.00)
 COARSE_GRATING    = 150
 COARSE_EXPOSURE_S = 1.0
 COARSE_CENTER_WL  = 700    # nm

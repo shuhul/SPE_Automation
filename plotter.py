@@ -2,7 +2,29 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import os
+import signal
+from contextlib import contextmanager
 import classifier
+
+
+@contextmanager
+def _sigint_default():
+    """Temporarily restore the default SIGINT handler.
+
+    matplotlib's Qt backend only sets up its SIGINT-wakeup socketpair (and
+    the QSocketNotifier in _may_clear_sock) when a *custom* SIGINT handler is
+    installed. automate.py installs one for Ctrl+C handling, which leaves
+    that notifier alive watching a socket that gets closed once the window
+    is closed — it then fires later during input(), raising
+    OSError [WinError 10038] on Windows. Using the default handler during
+    plt.show(block=True) makes matplotlib skip that setup entirely.
+    """
+    old_handler = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, old_handler)
 
 def edges_from_centers(coords):
     diffs = np.diff(coords) / 2
@@ -308,7 +330,8 @@ def plot_heatmap(foldername, title='PL Spectrum', xlabel='X Position (um)', ylab
     fig.canvas.mpl_connect("key_press_event", on_key)
 
     plt.tight_layout()
-    plt.show(block=True)
+    with _sigint_default():
+        plt.show(block=True)
 
 
 
@@ -914,7 +937,8 @@ def plot_heatmap_manual(foldername, scan_type,
     fig.canvas.mpl_connect("key_press_event", on_key)
 
     plt.tight_layout()
-    plt.show(block=True)
+    with _sigint_default():
+        plt.show(block=True)
 
 
 def select_emitters(foldername, scan_type,
@@ -1214,7 +1238,8 @@ def select_emitters(foldername, scan_type,
     fig.canvas.mpl_connect('key_press_event', on_key)
 
     plt.tight_layout()
-    plt.show(block=True)
+    with _sigint_default():
+        plt.show(block=True)
 
     if _switched_backend:
         plt.switch_backend('Agg')
@@ -1241,3 +1266,12 @@ def open_heatmap(foldername, scan_type, data_folder='data', **kwargs):
     finally:
         if switched:
             plt.switch_backend('Agg')
+            # Drop the Qt interrupt-handling wakeup socket registered by
+            # plt.show(block=True); otherwise its QSocketNotifier fires on
+            # the now-closed socket later (e.g. during input()), raising
+            # OSError [WinError 10038] in _may_clear_sock on Windows.
+            try:
+                import signal
+                signal.set_wakeup_fd(-1)
+            except (ValueError, OSError):
+                pass
