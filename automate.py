@@ -19,7 +19,7 @@ import numpy as np
 from datetime import datetime
 
 import matplotlib
-# Always start on the non-interactive Agg backend. plotter.open_heatmap() /
+# Always start on the non-interactive Agg backend. plotter.open_heatmap() 
 # select_emitters() switch to QtAgg only while their window is open and
 # switch back to Agg afterwards. Leaving QtAgg active across input() calls
 # triggers a stale QSocketNotifier in matplotlib's Qt backend on Windows
@@ -40,7 +40,7 @@ import g2 as g2mod
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f3-500uW-1s-fullauto-3'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f3-100uW-1s-fullauto-2'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-05-28_18-08-36'   # bandpass calibration subfolder name
@@ -50,7 +50,7 @@ COARSE_XDIM       = 2  # um
 COARSE_YDIM       = 2   # um
 COARSE_DX         = 0.5    # um step size
 COARSE_DY         = 0.5
-COARSE_CENTER     = (-11.00, -6.80)
+COARSE_CENTER     = (-11.50, -7.50)
 COARSE_GRATING    = 150
 COARSE_EXPOSURE_S = 1.0
 COARSE_CENTER_WL  = 700    # nm
@@ -567,52 +567,59 @@ def main():
             print('  [G2] PicoHarp not available — skipping G2.')
             g2_status = 'g2 unavailable'
         else:
-            # Wait 1: user flips mirror to APD path
-            psp._send_telegram(CURRENT_USER,
-                f'Emitter {i+1}/{len(emitters)}: ZPL={target_wl:.1f} nm, '
-                f'filter at {angle:.1f} deg. '
-                f'Flip mirror to APD path, then press Enter in the terminal.')
-            _paused_input('  [G2] Flip mirror to APD path, press Enter when ready...')
+            # Lock the galvo at the long-scan target position for the whole
+            # G2 measurement — pl_spec_lf's sgd_off() resets to (0,0) at the
+            # end of every scan, so without this G2 would run at (0,0).
+            sgd.goto(tx, ty)
+            try:
+                # Wait 1: user flips mirror to APD path
+                psp._send_telegram(CURRENT_USER,
+                    f'Emitter {i+1}/{len(emitters)}: ZPL={target_wl:.1f} nm, '
+                    f'filter at {angle:.1f} deg. '
+                    f'Flip mirror to APD path, then press Enter in the terminal.')
+                _paused_input('  [G2] Flip mirror to APD path, press Enter when ready...')
 
-            # Count-rate preview — print a few readings so user can verify signal
-            print('  [G2] Count rates:')
-            for _ in range(4):
-                r0, r1 = picoharp.get_count_rates()
-                print(f'         Ch0: {r0:.2e} cps   Ch1: {r1:.2e} cps')
-                time.sleep(1.0)
-            print(f'  [G2] Target: {G2_TARGET_RECORDS:,} records')
+                # Count-rate preview — print a few readings so user can verify signal
+                print('  [G2] Count rates:')
+                for _ in range(4):
+                    r0, r1 = picoharp.get_count_rates()
+                    print(f'         Ch0: {r0:.2e} cps   Ch1: {r1:.2e} cps')
+                    time.sleep(1.0)
+                print(f'  [G2] Target: {G2_TARGET_RECORDS:,} records')
 
-            # Wait 2: align on live counts, then confirm before committing
-            _wait_start_or_align()
+                # Wait 2: align on live counts, then confirm before committing
+                _wait_start_or_align()
 
-            g2_status = 'g2 done'
-            if not _stop and not _stop_immediately:
-                g2_folder = os.path.join(DATA_FOLDER, FOLDERNAME,
-                                         f'g2_x{tx:.1f}_y{ty:.1f}')
-                npz_path = picoharp.ph_acquire(G2_TARGET_RECORDS, out_folder=g2_folder,
-                                               stop_flag=lambda: _stop or _stop_immediately)
-                if npz_path:
-                    g2_result = g2mod.run(npz_path, out_folder=g2_folder,
-                                          g2time_ns=G2_TIME_NS, timebin_ns=G2_TIMEBIN_NS)
-                    if g2_result['popt'] is not None:
-                        g2_0 = 1 - g2_result['popt'][1]
-                        print(f'  g²(0) = {g2_0:.3f}')
+                g2_status = 'g2 done'
+                if not _stop and not _stop_immediately:
+                    g2_folder = os.path.join(DATA_FOLDER, FOLDERNAME,
+                                             f'g2_x{tx:.1f}_y{ty:.1f}')
+                    npz_path = picoharp.ph_acquire(G2_TARGET_RECORDS, out_folder=g2_folder,
+                                                   stop_flag=lambda: _stop or _stop_immediately)
+                    if npz_path:
+                        g2_result = g2mod.run(npz_path, out_folder=g2_folder,
+                                              g2time_ns=G2_TIME_NS, timebin_ns=G2_TIMEBIN_NS)
+                        if g2_result['popt'] is not None:
+                            g2_0 = 1 - g2_result['popt'][1]
+                            print(f'  g²(0) = {g2_0:.3f}')
+                        else:
+                            print('  g² fit did not converge.')
+                            g2_status = 'g2 no fit'
                     else:
-                        print('  g² fit did not converge.')
-                        g2_status = 'g2 no fit'
+                        print('  G2 acquisition returned no data.')
+                        g2_status = 'g2 no data'
                 else:
-                    print('  G2 acquisition returned no data.')
-                    g2_status = 'g2 no data'
-            else:
-                g2_status = 'g2 skipped'
+                    g2_status = 'g2 skipped'
 
-            # Wait 3: user flips mirror back before moving to next emitter
-            g2_0_str = f'{g2_0:.3f}' if g2_0 is not None else 'no fit'
-            psp._send_telegram(CURRENT_USER,
-                f'Emitter {i+1}/{len(emitters)} G2 done. '
-                f'g²(0) = {g2_0_str}. '
-                f'Flip mirror back to spectrometer path, then press Enter.')
-            _paused_input('  [G2] Flip mirror back to spectrometer path, press Enter to continue...')
+                # Wait 3: user flips mirror back before moving to next emitter
+                g2_0_str = f'{g2_0:.3f}' if g2_0 is not None else 'no fit'
+                psp._send_telegram(CURRENT_USER,
+                    f'Emitter {i+1}/{len(emitters)} G2 done. '
+                    f'g²(0) = {g2_0_str}. '
+                    f'Flip mirror back to spectrometer path, then press Enter.')
+                _paused_input('  [G2] Flip mirror back to spectrometer path, press Enter to continue...')
+            finally:
+                sgd.sgd_off()
 
         fil.flip_down()
         _filter_is_up = False
