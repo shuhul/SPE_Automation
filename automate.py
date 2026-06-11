@@ -40,7 +40,7 @@ import g2 as g2mod
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f3-100uW-1s-fullauto-2'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f3-100uW-1s-fullauto-4'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-05-28_18-08-36'   # bandpass calibration subfolder name
@@ -69,7 +69,7 @@ LONG_GRATING      = 600
 LONG_EXPOSURE_S   = 10.0
 
 # G2 measurement
-G2_TARGET_RECORDS = 1_000_000
+G2_TARGET_RECORDS = 50_000_000
 G2_TIME_NS        = 100.0
 G2_TIMEBIN_NS     = 0.25
 
