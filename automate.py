@@ -12,6 +12,7 @@ MANUAL_PLOT_INTERACTION = True
 
 import os
 import signal
+import sys
 import threading
 import time
 import numpy as np
@@ -39,24 +40,24 @@ import g2 as g2mod
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f3-500uW-1s-fullauto-1'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f3-500uW-1s-fullauto-3'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-05-28_18-08-36'   # bandpass calibration subfolder name
 
 # Coarse scan — wide area to locate candidate emitters
-COARSE_XDIM       = 20   # um
-COARSE_YDIM       = 20   # um
+COARSE_XDIM       = 2  # um
+COARSE_YDIM       = 2   # um
 COARSE_DX         = 0.5    # um step size
 COARSE_DY         = 0.5
-COARSE_CENTER     = (0, 0)
+COARSE_CENTER     = (-11.00, -6.80)
 COARSE_GRATING    = 150
 COARSE_EXPOSURE_S = 1.0
 COARSE_CENTER_WL  = 700    # nm
 
 # Fine scan — zoomed scan centred on each classified emitter
-FINE_XDIM         = 3 # 3.0
-FINE_YDIM         = 3 # 3.0
+FINE_XDIM         = 2 # 3.0
+FINE_YDIM         = 2 # 3.0
 FINE_DX           = 0.25 # 0.25
 FINE_DY           = 0.25 # 0.25
 FINE_GRATING      = 150
@@ -146,6 +147,59 @@ def _paused_input(prompt):
     _flush_keys()
     try:
         return input(prompt)
+    finally:
+        _flush_keys()
+        _monitor_paused.clear()
+
+
+def _live_count_display():
+    """Continuously print live PicoHarp count rates for alignment.
+    Press any key to stop and return."""
+    import msvcrt
+    _monitor_paused.set()
+    _flush_keys()
+    print('  [G2] Live counts — adjust alignment, press any key to stop...')
+    try:
+        while True:
+            r0, r1 = picoharp.get_count_rates()
+            sys.stdout.write(f'\r         Ch0: {r0:.2e} cps   Ch1: {r1:.2e} cps   ')
+            sys.stdout.flush()
+            if msvcrt.kbhit():
+                msvcrt.getch()
+                break
+            time.sleep(0.2)
+    finally:
+        print()
+        _flush_keys()
+        _monitor_paused.clear()
+
+
+def _wait_start_or_align():
+    """Wait for Enter (start acquisition) or 'a' (show live counts for
+    alignment, looping back to this prompt afterward).
+
+    Reads raw keypresses via msvcrt instead of input() — input() can hang
+    here due to the same Qt-input-hook/msvcrt conflict that previously
+    caused stale-socket crashes (see commit be886c6)."""
+    import msvcrt
+    _monitor_paused.set()
+    _flush_keys()
+    try:
+        while True:
+            print("  [G2] Press Enter to start acquisition, "
+                  "or 'a' to view live counts for alignment...")
+            while True:
+                if msvcrt.kbhit():
+                    key = msvcrt.getch()
+                    if key in (b'\r', b'\n'):
+                        return
+                    if key.lower() == b'a':
+                        _live_count_display()
+                        _monitor_paused.set()
+                        _flush_keys()
+                        break
+                else:
+                    time.sleep(0.05)
     finally:
         _flush_keys()
         _monitor_paused.clear()
@@ -528,8 +582,8 @@ def main():
                 time.sleep(1.0)
             print(f'  [G2] Target: {G2_TARGET_RECORDS:,} records')
 
-            # Wait 2: confirm before committing the acquisition
-            _paused_input('  [G2] Press Enter to start acquisition...')
+            # Wait 2: align on live counts, then confirm before committing
+            _wait_start_or_align()
 
             g2_status = 'g2 done'
             if not _stop and not _stop_immediately:

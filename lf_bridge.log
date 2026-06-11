@@ -1098,3 +1098,80 @@ Exception rethrown at [0]:
 2026-06-10 16:39:20,027 INFO Setup complete, LightField ready.
 2026-06-10 16:49:36,765 INFO Shutdown command received.
 2026-06-10 16:49:38,501 INFO LightField Automation disposed cleanly.
+2026-06-10 17:10:52,858 INFO LightField bridge starting...
+2026-06-10 17:10:52,866 INFO Bridge listening on localhost:27028
+2026-06-10 17:11:04,428 INFO Connected to LightField. Experiment: 'Untitled Experiment'
+2026-06-10 17:13:13,436 ERROR Command "setup" failed (marking LF disconnected): Failed to read from an IPC Port: The pipe has been ended.
+
+
+Server stack trace: 
+   at System.Runtime.Remoting.Channels.Ipc.IpcPort.Read(Byte[] data, Int32 offset, Int32 length)
+   at System.Runtime.Remoting.Channels.SocketHandler.ReadFromSocket(Byte[] buffer, Int32 offset, Int32 count)
+   at System.Runtime.Remoting.Channels.SocketHandler.Read(Byte[] buffer, Int32 offset, Int32 count)
+   at System.Runtime.Remoting.Channels.SocketHandler.ReadAndMatchFourBytes(Byte[] buffer)
+   at System.Runtime.Remoting.Channels.Tcp.TcpSocketHandler.ReadAndMatchPreamble()
+   at System.Runtime.Remoting.Channels.Tcp.TcpSocketHandler.ReadVersionAndOperation(UInt16& operation)
+   at System.Runtime.Remoting.Channels.Ipc.IpcClientHandler.ReadHeaders()
+   at System.Runtime.Remoting.Channels.Ipc.IpcClientTransportSink.ProcessMessage(IMessage msg, ITransportHeaders requestHeaders, Stream requestStream, ITransportHeaders& responseHeaders, Stream& responseStream)
+   at System.Runtime.Remoting.Channels.BinaryClientFormatterSink.SyncProcessMessage(IMessage msg)
+
+Exception rethrown at [0]: 
+   at System.Runtime.Remoting.Proxies.RealProxy.HandleReturnMessage(IMessage reqMsg, IMessage retMsg)
+   at System.Runtime.Remoting.Proxies.RealProxy.PrivateInvoke(MessageData& msgData, Int32 type)
+   at PrincetonInstruments.LightField.AddIns.Contracts.IExperimentContract.SetValue(String setting, Object value)
+   at PrincetonInstruments.LightField.AddIns.HostSideAdapters.IExperimentContractToViewHostAdapter.SetValue(String setting, Object value)
+2026-06-10 17:13:13,436 INFO Shutdown command received.
+2026-06-10 17:13:13,639 ERROR Error during Dispose: Failed to connect to an IPC Port: The system cannot find the file specified.
+ 
+
+Server stack trace: 
+   at System.Runtime.Remoting.Channels.Ipc.IpcPort.Connect(String portName, Boolean secure, TokenImpersonationLevel impersonationLevel, Int32 timeout)
+   at System.Runtime.Remoting.Channels.Ipc.ConnectionCache.GetConnection(String portName, Boolean secure, TokenImpersonationLevel level, Int32 timeout)
+   at System.Runtime.Remoting.Channels.Ipc.IpcClientTransportSink.ProcessMessage(IMessage msg, ITransportHeaders requestHeaders, Stream requestStream, ITransportHeaders& responseHeaders, Stream& responseStream)
+   at System.Runtime.Remoting.Channels.BinaryClientFormatterSink.SyncProcessMessage(IMessage msg)
+
+Exception rethrown at [0]: 
+   at System.Runtime.Remoting.Proxies.RealProxy.HandleReturnMessage(IMessage reqMsg, IMessage retMsg)
+   at System.Runtime.Remoting.Proxies.RealProxy.PrivateInvoke(MessageData& msgData, Int32 type)
+   at PrincetonInstruments.LightField.AddIns.Contracts.ILightFieldAutomationContract.RemoveLightFieldClosedHandler(ILightFieldClosedEventArgsHandler handler)
+   at PrincetonInstruments.LightField.AddIns.HostSideAdapters.ILightFieldAutomationContractToViewHostAdapter.remove_LightFieldClosed(EventHandler`1 value)
+   at PrincetonInstruments.LightField.Automation.Automation.DisposeImpl(Boolean fromClosed)
+2026-06-10 17:15:10,943 INFO LightField bridge starting...
+2026-06-10 17:15:10,954 INFO Bridge listening on localhost:27028
+2026-06-10 17:15:49,924 INFO Connected to LightField. Experiment: 'PL'
+2026-06-10 17:16:28,719 INFO Setup complete, LightField ready.
+2026-06-10 17:17:36,757 INFO Setup complete, LightField ready.
+2026-06-10 17:18:45,237 INFO Setup complete, LightField ready.
+2026-06-10 17:23:19,835 INFO Setup complete, LightField ready.
+2026-06-10 17:24:27,403 INFO Setup complete, LightField ready.
+2026-06-10 17:25:35,632 INFO Setup complete, LightField ready.
+2026-06-10 17:33:46,955 INFO Setup complete, LightField ready.
+2026-06-10 17:34:01,953 INFO Setup complete, LightField ready.
+2026-06-10 17:38:13,898 INFO Shutdown command received.
+2026-06-10 17:38:15,095 INFO LightField Automation disposed cleanly.
+2026-06-10 17:48:38,799 INFO LightField bridge starting...
+2026-06-10 17:48:38,811 INFO Bridge listening on localhost:27028
+2026-06-10 17:49:17,474 INFO Connected to LightField. Experiment: 'PL'
+2026-06-10 17:49:56,253 INFO Setup complete, LightField ready.
+2026-06-10 17:51:03,858 INFO Setup complete, LightField ready.
+2026-06-10 17:52:12,081 INFO Setup complete, LightField ready.
+2026-06-10 17:55:47,754 INFO Setup complete, LightField ready.
+2026-06-10 17:56:55,291 INFO Setup complete, LightField ready.
+2026-06-10 17:58:03,666 INFO Setup complete, LightField ready.
+2026-06-10 18:02:34,409 INFO Setup complete, LightField ready.
+2026-06-10 18:02:48,540 INFO Setup complete, LightField ready.
+2026-06-10 18:11:56,604 INFO Shutdown command received.
+2026-06-10 18:11:57,808 INFO LightField Automation disposed cleanly.
+2026-06-10 18:50:51,826 INFO LightField bridge starting...
+2026-06-10 18:50:51,836 INFO Bridge listening on localhost:27028
+2026-06-10 18:51:05,453 INFO Connected to LightField. Experiment: 'PL'
+2026-06-10 18:51:43,938 INFO Setup complete, LightField ready.
+2026-06-10 18:52:51,961 INFO Setup complete, LightField ready.
+2026-06-10 18:54:00,759 INFO Setup complete, LightField ready.
+2026-06-10 18:57:17,795 INFO Setup complete, LightField ready.
+2026-06-10 18:58:25,513 INFO Setup complete, LightField ready.
+2026-06-10 18:59:34,018 INFO Setup complete, LightField ready.
+2026-06-10 19:04:12,269 INFO Setup complete, LightField ready.
+2026-06-10 19:04:27,377 INFO Setup complete, LightField ready.
+2026-06-10 19:10:56,493 INFO Shutdown command received.
+2026-06-10 19:10:57,641 INFO LightField Automation disposed cleanly.

@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.signal import find_peaks, peak_widths
 
-EMISSION_COUNT_THRESHOLD = 120  # hard count threshold for emission peak
+EMISSION_COUNT_THRESHOLD = 60  # hard count threshold for emission peak
 
 # def classify_spectrum(spectrum, wl, ratio_threshold=None):
 #     peaks, properties = find_peaks(spectrum, height=40, prominence=20, distance=10)
