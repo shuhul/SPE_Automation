@@ -3,7 +3,43 @@ from scipy.signal import find_peaks, peak_widths
 
 EMISSION_COUNT_THRESHOLD = 120  # hard count threshold for emission peak
 
-def classify_spectrum(spectrum, wl, ratio_threshold=None):
+# def classify_spectrum(spectrum, wl, ratio_threshold=None):
+#     peaks, properties = find_peaks(spectrum, height=40, prominence=20, distance=10)
+#     widths_samples = peak_widths(spectrum, peaks, rel_height=0.5)[0]
+#     peak_wls = wl[peaks]
+#     peak_heights = properties["peak_heights"]
+
+#     if len(peak_wls) == 0:
+#         return 0, None, None
+
+#     # 1. Find the tallest peak in the emission window (580 - 630 nm)
+#     emission_mask = (peak_wls > 580) & (peak_wls < 630)
+#     valid_emission_indices = np.where(emission_mask)[0]
+
+#     if len(valid_emission_indices) == 0:
+#         return 0, None, None
+
+#     emission_heights = peak_heights[valid_emission_indices]
+#     local_max_idx = valid_emission_indices[np.argmax(emission_heights)]
+
+#     emission_peak_wl = peak_wls[local_max_idx]
+#     emission_peak_height = peak_heights[local_max_idx]
+
+#     # 2. Hard count threshold
+#     if emission_peak_height <= EMISSION_COUNT_THRESHOLD:
+#         return 0, None, None
+
+#     # 3. Check FWHM
+#     emission_peak_fwhm = widths_samples[local_max_idx] * (wl[1] - wl[0])  # convert to nm
+
+#     if not (5 < emission_peak_fwhm < 35):
+#         return 0, None, None
+
+#     return 1, emission_peak_height, emission_peak_wl
+
+
+# --- Previous classifier, for reference ---
+def classify_spectrum(spectrum, wl, ratio_threshold=1.05):
     peaks, properties = find_peaks(spectrum, height=40, prominence=20, distance=10)
     widths_samples = peak_widths(spectrum, peaks, rel_height=0.5)[0]
     peak_wls = wl[peaks]
@@ -12,24 +48,35 @@ def classify_spectrum(spectrum, wl, ratio_threshold=None):
     if len(peak_wls) == 0:
         return 0, None, None
 
-    # 1. Find the tallest peak in the emission window (580 - 630 nm)
-    emission_mask = (peak_wls > 580) & (peak_wls < 630)
+    # 1. Find the Laser Peak (530 - 535 nm)
+    laser_mask = (peak_wls > 530) & (peak_wls < 535)
+    valid_laser_indices = np.where(laser_mask)[0]
+
+    if len(valid_laser_indices) == 0:
+        return 0, None, None
+
+    laser_peak_idx = valid_laser_indices[0]
+    laser_peak_height = peak_heights[laser_peak_idx]
+
+    # 2. Find the Emission Peak (565 - 630 nm)
+    emission_mask = (peak_wls > 565) & (peak_wls < 630)
     valid_emission_indices = np.where(emission_mask)[0]
 
     if len(valid_emission_indices) == 0:
         return 0, None, None
 
+    # Find the highest peak strictly within the emission range
     emission_heights = peak_heights[valid_emission_indices]
     local_max_idx = valid_emission_indices[np.argmax(emission_heights)]
 
     emission_peak_wl = peak_wls[local_max_idx]
     emission_peak_height = peak_heights[local_max_idx]
 
-    # 2. Hard count threshold
-    if emission_peak_height <= EMISSION_COUNT_THRESHOLD:
+    # 3. Check Threshold
+    if not (emission_peak_height > ratio_threshold * laser_peak_height):
         return 0, None, None
 
-    # 3. Check FWHM
+    # 4. Check FWHM
     emission_peak_fwhm = widths_samples[local_max_idx] * (wl[1] - wl[0])  # convert to nm
 
     if not (5 < emission_peak_fwhm < 35):
@@ -38,57 +85,10 @@ def classify_spectrum(spectrum, wl, ratio_threshold=None):
     return 1, emission_peak_height, emission_peak_wl
 
 
-# --- Previous classifier, for reference ---
-# def classify_spectrum(spectrum, wl, ratio_threshold=1.05):
-#     peaks, properties = find_peaks(spectrum, height=40, prominence=20, distance=10)
-#     widths_samples = peak_widths(spectrum, peaks, rel_height=0.5)[0]
-#     peak_wls = wl[peaks]
-#     peak_heights = properties["peak_heights"]
-#
-#     if len(peak_wls) == 0:
-#         return 0, None, None
-#
-#     # 1. Find the Laser Peak (530 - 535 nm)
-#     laser_mask = (peak_wls > 530) & (peak_wls < 535)
-#     valid_laser_indices = np.where(laser_mask)[0]
-#
-#     if len(valid_laser_indices) == 0:
-#         return 0, None, None
-#
-#     laser_peak_idx = valid_laser_indices[0]
-#     laser_peak_height = peak_heights[laser_peak_idx]
-#
-#     # 2. Find the Emission Peak (560 - 630 nm)
-#     emission_mask = (peak_wls > 560) & (peak_wls < 630)
-#     valid_emission_indices = np.where(emission_mask)[0]
-#
-#     if len(valid_emission_indices) == 0:
-#         return 0, None, None
-#
-#     # Find the highest peak strictly within the emission range
-#     emission_heights = peak_heights[valid_emission_indices]
-#     local_max_idx = valid_emission_indices[np.argmax(emission_heights)]
-#
-#     emission_peak_wl = peak_wls[local_max_idx]
-#     emission_peak_height = peak_heights[local_max_idx]
-#
-#     # 3. Check Threshold
-#     if not (emission_peak_height > ratio_threshold * laser_peak_height):
-#         return 0, None, None
-#
-#     # 4. Check FWHM
-#     emission_peak_fwhm = widths_samples[local_max_idx] * (wl[1] - wl[0])  # convert to nm
-#
-#     if not (5 < emission_peak_fwhm < 35):
-#         return 0, None, None
-#
-#     return 1, emission_peak_height, emission_peak_wl
-
-
 def get_peak_annotation(spectrum, wl):
     """Return (peak_wl, peak_height, left_wl, right_wl, fwhm_nm) for the emission peak
     using the exact same scipy logic as classify_spectrum. Returns None if no emission
-    peak is found in the 560-630 nm window."""
+    peak is found in the 565-630 nm window."""
     peaks, properties = find_peaks(spectrum, height=40, prominence=20, distance=10)
     if len(peaks) == 0:
         return None
@@ -96,7 +96,7 @@ def get_peak_annotation(spectrum, wl):
     peak_wls    = wl[peaks]
     peak_heights = properties["peak_heights"]
 
-    emission_mask = (peak_wls > 560) & (peak_wls < 630)
+    emission_mask = (peak_wls > 565) & (peak_wls < 630)
     valid = np.where(emission_mask)[0]
     if len(valid) == 0:
         return None
