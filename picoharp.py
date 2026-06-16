@@ -3,6 +3,7 @@ import ctypes
 import time
 import sys
 import os
+import struct
 import numpy as np
 from datetime import datetime
 
@@ -18,6 +19,43 @@ T2_WRAPAROUND = 2 ** 28
 _CFD_LEVEL_MV     = 150
 _CFD_ZEROCROSS_MV = 10
 
+
+def _write_minimal_ptu_header(f, n_records, resolution_s=4e-12):
+    """
+    Write a minimal but valid PicoQuant PTU header so the file can be
+    opened by SymPhoTime, our Python parsers, and the MATLAB scripts.
+
+    Only writes the tags that downstream parsers actually need.
+    Everything else (e.g. hardware serial numbers) is left at defaults.
+    """
+    def write_tag(ident, idx, typ, value_bytes):
+        padded = ident.encode('ascii')[:32].ljust(32, b'\x00')
+        f.write(padded)
+        f.write(struct.pack('<iI', idx, typ))
+        f.write(value_bytes)
+
+    TY_INT8      = 0x10000008
+    TY_FLOAT8    = 0x20000008
+    TY_ANSISTR   = 0x4001FFFF
+    TY_EMPTY8    = 0xFFFF0008
+    RT_PICOHARP_T2 = 0x00010203
+
+    # Magic + version
+    f.write(b'PQTTTR\x00\x00')
+    f.write(b'1.0.00\x00\x00')
+
+    # Required tags
+    write_tag('TTResultFormat_TTTRRecType', -1, TY_INT8,
+              struct.pack('<q', RT_PICOHARP_T2))
+    write_tag('TTResult_NumberOfRecords', -1, TY_INT8,
+              struct.pack('<q', n_records))
+    write_tag('MeasDesc_Resolution', -1, TY_FLOAT8,
+              struct.pack('<d', resolution_s))
+    write_tag('MeasDesc_GlobalResolution', -1, TY_FLOAT8,
+              struct.pack('<d', resolution_s))
+
+    # Header end marker
+    write_tag('Header_End', -1, TY_EMPTY8, struct.pack('<q', 0))
 
 def ph_init():
     global PHLIB
@@ -62,7 +100,7 @@ def get_count_rates():
 
 
 def ph_acquire(target_records, acq_time_s=10000, out_folder='g2_data', progress_signal=None,
-               stop_flag=None):
+               stop_flag=None, save_ptu=True):
     """
     Run T2 acquisition until target_records collected or acq_time_s elapsed.
     Parses raw TTTR records and saves ch0/ch1 photon times to a timestamped .npz.
@@ -78,6 +116,7 @@ def ph_acquire(target_records, acq_time_s=10000, out_folder='g2_data', progress_
     Returns:
         Path to the saved .npz file, or None if no data was collected.
     """
+    global PHLIB
     os.makedirs(out_folder, exist_ok=True)
 
     buffer     = (ctypes.c_uint32 * TTREADMAX)()
@@ -149,6 +188,16 @@ def ph_acquire(target_records, acq_time_s=10000, out_folder='g2_data', progress_
     if len(raw) > target_records:
         raw = raw[:target_records]
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+#  Save raw PTU file
+    if save_ptu:
+       ptu_path = os.path.join(out_folder, f"{timestamp}.ptu")
+       with open(ptu_path, 'wb') as f:
+           _write_minimal_ptu_header(f, len(raw), resolution_s=RESOLUTION_PS * 1e-12)
+           raw.tofile(f)
+       print(f"Saved raw PTU: '{ptu_path}' ({len(raw):,} records)")
+
     # Parse T2 records into absolute photon times
     channel_field = (raw >> 28) & 0xF
     timetag_field =  raw        & 0x0FFFFFFF
@@ -168,8 +217,8 @@ def ph_acquire(target_records, acq_time_s=10000, out_folder='g2_data', progress_
     ch1 = times_ps[channels == 1]
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path  = os.path.join(out_folder, f"{timestamp}.npz")
-    np.savez(out_path, ch0=ch0, ch1=ch1)
-    print(f"Saved {len(ch0):,} ch0 + {len(ch1):,} ch1 photons → '{out_path}'")
+    npz_path  = os.path.join(out_folder, f"{timestamp}.npz")
+    np.savez(npz_path, ch0=ch0, ch1=ch1)
+    print(f"Saved {len(ch0):,} ch0 + {len(ch1):,} ch1 photons → '{npz_path}'")
 
-    return out_path
+    return npz_path
