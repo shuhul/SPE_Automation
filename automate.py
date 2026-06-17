@@ -600,7 +600,7 @@ def main():
                         g2_result = g2mod.run(npz_path, out_folder=g2_folder,
                                               g2time_ns=G2_TIME_NS, timebin_ns=G2_TIMEBIN_NS)
                         if g2_result['popt'] is not None:
-                            g2_0 = 1 - g2_result['popt'][1]
+                            g2_0 = g2_result['g2_0_norm']
                             print(f'  g²(0) = {g2_0:.3f}')
                         else:
                             print('  g² fit did not converge.')
