@@ -1529,3 +1529,42 @@ Exception rethrown at [0]:
 2026-06-16 09:23:02,741 INFO Setup complete, LightField ready.
 2026-06-16 11:52:01,010 INFO Setup complete, LightField ready.
 2026-06-16 14:12:41,421 INFO Setup complete, LightField ready.
+2026-06-17 14:06:15,545 INFO LightField bridge starting...
+2026-06-17 14:06:15,555 INFO Bridge listening on localhost:27028
+2026-06-17 14:06:34,251 INFO Connected to LightField. Experiment: 'PL'
+2026-06-17 14:06:50,201 INFO Setup complete, LightField ready.
+2026-06-17 14:07:46,073 INFO Setup complete, LightField ready.
+2026-06-17 14:07:48,931 INFO Shutdown command received.
+2026-06-17 14:07:50,272 INFO LightField Automation disposed cleanly.
+2026-06-17 14:09:43,555 INFO LightField bridge starting...
+2026-06-17 14:09:43,560 INFO Bridge listening on localhost:27028
+2026-06-17 14:09:57,586 INFO Connected to LightField. Experiment: 'PL'
+2026-06-17 14:10:13,757 INFO Setup complete, LightField ready.
+2026-06-17 14:11:21,344 INFO Setup complete, LightField ready.
+2026-06-17 14:12:29,671 INFO Setup complete, LightField ready.
+2026-06-17 14:31:25,057 INFO Shutdown command received.
+2026-06-17 14:31:26,874 INFO LightField Automation disposed cleanly.
+2026-06-17 14:57:24,565 INFO LightField bridge starting...
+2026-06-17 14:57:24,579 INFO Bridge listening on localhost:27028
+2026-06-17 14:57:42,799 INFO Connected to LightField. Experiment: 'PL'
+2026-06-17 14:57:58,927 INFO Setup complete, LightField ready.
+2026-06-17 14:59:06,432 INFO Setup complete, LightField ready.
+2026-06-17 15:00:14,682 INFO Setup complete, LightField ready.
+2026-06-17 15:21:52,349 INFO Setup complete, LightField ready.
+2026-06-17 15:22:59,563 INFO Setup complete, LightField ready.
+2026-06-17 15:24:07,876 INFO Setup complete, LightField ready.
+2026-06-17 15:35:17,979 INFO Setup complete, LightField ready.
+2026-06-17 15:35:33,704 INFO Setup complete, LightField ready.
+2026-06-17 16:22:11,575 INFO Shutdown command received.
+2026-06-17 16:22:12,759 INFO LightField Automation disposed cleanly.
+2026-06-17 19:30:18,057 INFO LightField bridge starting...
+2026-06-17 19:30:18,066 INFO Bridge listening on localhost:27028
+2026-06-17 19:30:36,510 INFO Connected to LightField. Experiment: 'PL'
+2026-06-17 19:31:14,951 INFO Setup complete, LightField ready.
+2026-06-17 19:32:22,595 INFO Setup complete, LightField ready.
+2026-06-17 19:33:30,831 INFO Setup complete, LightField ready.
+2026-06-17 22:19:39,412 INFO Setup complete, LightField ready.
+2026-06-17 22:20:46,763 INFO Setup complete, LightField ready.
+2026-06-17 22:21:55,107 INFO Setup complete, LightField ready.
+2026-06-17 23:32:13,905 INFO Setup complete, LightField ready.
+2026-06-17 23:32:29,009 INFO Setup complete, LightField ready.

@@ -39,14 +39,14 @@ import g2 as g2mod
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-EL-BulkAnneal-ExfJune42026-Ch1-T1A1-85uW-1s-fullauto-1'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f1-100uW-1s-fullauto-1'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-05-28_18-08-36'   # bandpass calibration subfolder name
 
 # Coarse scan — wide area to locate candidate emitters
-COARSE_XDIM       = 20  # um
-COARSE_YDIM       = 20   # um
+COARSE_XDIM       = 30  # um
+COARSE_YDIM       = 30   # um
 COARSE_DX         = 0.5    # um step size
 COARSE_DY         = 0.5
 COARSE_CENTER     = (0.00, 0.00)
@@ -599,7 +599,7 @@ def main():
                         g2_result = g2mod.run(npz_path, out_folder=g2_folder,
                                               g2time_ns=G2_TIME_NS, timebin_ns=G2_TIMEBIN_NS)
                         if g2_result['popt'] is not None:
-                            g2_0 = 1 - g2_result['popt'][1]
+                            g2_0 = g2_result['g2_0_norm']
                             print(f'  g²(0) = {g2_0:.3f}')
                         else:
                             print('  g² fit did not converge.')

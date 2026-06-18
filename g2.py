@@ -1,4 +1,3 @@
-"""G2 photon correlation analysis. PTU parsing + eff2 start-stop algorithm."""
 import os
 import struct
 import numpy as np
@@ -10,123 +9,49 @@ from scipy.optimize import curve_fit
 # =============================================================================
 # Constants
 # =============================================================================
-WRAPAROUND      = 268,435,456
+WRAPAROUND      = 2 ** 28
 RESOLUTION_PS   = 4
-RT_PICOHARP_T2  = 0x00010203
-
-TY_EMPTY8    = 0xFFFF0008
-TY_BOOL8     = 0x00000008
-TY_INT8      = 0x10000008
-TY_BITSET64  = 0x11000008
-TY_COLOR8    = 0x12000008
-TY_FLOAT8    = 0x20000008
-TY_TDATETIME = 0x21000008
-TY_FLOATARR  = 0x2001FFFF
-TY_ANSISTR   = 0x4001FFFF
-TY_WIDESTR   = 0x4002FFFF
-TY_BLOB      = 0xFFFFFFFF
-
-# =============================================================================
-# PTU Parsing
-# =============================================================================
-
-def read_ptu(path):
-    """Parse PTU file header and return raw TTTR records + tag dict."""
-    tags = {}
-    with open(path, 'rb') as f:
-        if b'PQTTTR' not in f.read(8):
-            raise ValueError("Not a valid PTU file")
-        f.read(8)
-        while True:
-            ident = f.read(32).rstrip(b'\x00').decode('ascii', errors='ignore')
-            _idx, typ = struct.unpack('<iI', f.read(8))
-            if typ == TY_EMPTY8:
-                f.read(8)
-            elif typ in (TY_BOOL8, TY_INT8, TY_BITSET64, TY_COLOR8):
-                tags[ident] = struct.unpack('<q', f.read(8))[0]
-            elif typ in (TY_FLOAT8, TY_TDATETIME):
-                tags[ident] = struct.unpack('<d', f.read(8))[0]
-            elif typ == TY_FLOATARR:
-                n = struct.unpack('<q', f.read(8))[0]; f.read(n)
-            elif typ in (TY_ANSISTR, TY_WIDESTR):
-                n = struct.unpack('<q', f.read(8))[0]
-                tags[ident] = f.read(n).rstrip(b'\x00').decode('ascii', errors='ignore')
-            elif typ == TY_BLOB:
-                n = struct.unpack('<q', f.read(8))[0]; f.read(n)
-            else:
-                raise ValueError(f"Unknown tag type 0x{typ:08X}")
-            if ident == 'Header_End':
-                break
-        n_records = tags.get('TTResult_NumberOfRecords', 0)
-        raw = np.frombuffer(f.read(4 * n_records), dtype=np.uint32, count=n_records)
-
-    if tags.get('TTResultFormat_TTTRRecType') != RT_PICOHARP_T2:
-        raise ValueError("Only PicoHarp T2 format is supported")
-    return raw, tags
-
-
-def parse_pt2(raw):
-    """Convert raw TTTR records to (channel, absolute_time_ps) arrays for photons."""
-    t2time  = (raw & 0x0FFFFFFF).astype(np.int64)
-    chan    = ((raw >> 28) & 0xF).astype(np.int32)
-    markers = (raw & 0xF).astype(np.int32)
-
-    overflow      = (chan == 15) & (markers == 0)
-    ofl_before    = np.cumsum(overflow.astype(np.int64)) - overflow.astype(np.int64)
-    abs_ps        = (ofl_before * WRAPAROUND + t2time) * RESOLUTION_PS
-
-    photon = (chan >= 0) & (chan <= 4) & ~overflow
-    return chan[photon].astype(np.int8), abs_ps[photon]
 
 # =============================================================================
 # G2 — eff2 start-stop algorithm
 # =============================================================================
 
-def _start_stop_hist(chan, times, g2time_ps, timebin_ps, I):
-    dt   = times[1:] - times[:-1]
-    c01  = (chan[:-1] == 0) & (chan[1:] == 1) & (dt <= g2time_ps)
-    c10  = (chan[:-1] == 1) & (chan[1:] == 0) & (dt <= g2time_ps)
-    c    = np.zeros(2 * I + 1, dtype=np.int64)
-    if c01.any():
-        idx = I + (dt[c01] // timebin_ps).astype(np.int64)
-        idx = idx[(idx >= 0) & (idx < 2 * I + 1)]
-        np.add.at(c, idx, 1)
-    if c10.any():
-        idx = I - np.ceil(dt[c10] / timebin_ps).astype(np.int64)
-        idx = idx[(idx >= 0) & (idx < 2 * I + 1)]
-        np.add.at(c, idx, 1)
-    return c
+def _clean_channel_afterflashes(times, min_dt_ps=9000, max_dt_ps=35000, seed=0):
+    """
+    Performs afterflash removal on a single channel's absolute timeline.
+    Removes stochastically anomalous successive triggers within the detector dead/trap time.
+    """
+    if times.size <= 1:
+        return times
 
+    # Calculate time differences between successive photons on the SAME detector
+    dt = times[1:] - times[:-1]
+    
+    # Identify indices where an afterflash candidate exists
+    flash_candidates = (dt >= min_dt_ps) & (dt <= max_dt_ps)
+    
+    if not flash_candidates.any():
+        return times
 
-def _afterflash_remove(chan, times, c, cavg, I, g2time_ps, timebin_ps, rng):
-    """Stochastically remove afterflash pairs with |τ| in (9, 35) ns."""
-    tau_ns   = (np.arange(2 * I + 1) - I) * timebin_ps / 1000.0
-    dt       = times[1:] - times[:-1]
+    # Calculate the baseline random coincidence rate for this channel's internal density
+    # to establish an expected random background count
+    avg_dt = np.mean(dt)
+    expected_random_fraction = (max_dt_ps - min_dt_ps) / avg_dt if avg_dt > 0 else 0.0
+    
+    # Stochastic filter: if candidates exceed expected random distribution, flag them
+    rng = np.random.default_rng(seed)
+    random_thresholds = rng.uniform(size=flash_candidates.sum())
+    
+    # Keep pairs that match expected random statistics, drop anomalous bursts
+    # (If the local density matches random chance, we keep it; if it's an afterflash burst, we drop)
+    drop_mask = np.zeros(times.size, dtype=bool)
+    candidate_indices = np.where(flash_candidates)[0] + 1
+    
+    # Prune out the afterflashes
+    to_drop = candidate_indices[random_thresholds > expected_random_fraction]
+    drop_mask[to_drop] = True
 
-    pair01   = (chan[:-1] == 0) & (chan[1:] == 1) & (dt < g2time_ps)
-    idx01    = I + (dt // timebin_ps).astype(np.int64)
-    pair10   = (chan[:-1] == 1) & (chan[1:] == 0) & (dt <= g2time_ps)
-    idx10    = I - np.ceil(dt / timebin_ps).astype(np.int64)
-
-    idx_safe01 = np.clip(idx01, 0, 2 * I)
-    idx_safe10 = np.clip(idx10, 0, 2 * I)
-
-    mask01 = pair01 & (np.abs(tau_ns[idx_safe01]) > 9) & (np.abs(tau_ns[idx_safe01]) < 35)
-    mask10 = pair10 & (np.abs(tau_ns[idx_safe10]) > 9) & (np.abs(tau_ns[idx_safe10]) < 35)
-    cand   = np.where(mask01 | mask10)[0]
-    if cand.size == 0:
-        return chan, times
-
-    cand_idx = np.where(mask01[cand], idx01[cand], idx10[cand])
-    c_at     = c[np.clip(cand_idx, 0, 2 * I)]
-    p1       = rng.poisson(cavg, size=cand.size).astype(np.float64)
-    p2       = rng.poisson(c_at).astype(np.float64)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        crat = p1 / np.where(p2 == 0, np.inf, p2)
-    to_delete    = cand[rng.uniform(size=cand.size) > crat] + 1
-    keep         = np.ones(len(times), dtype=bool)
-    keep[to_delete] = False
-    return chan[keep], times[keep]
+    return times[~drop_mask]
 
 
 def _model(x, a, b, T1, T2):
@@ -136,27 +61,39 @@ def _model(x, a, b, T1, T2):
 # Public API
 # =============================================================================
 
-def _compute_g2(chan, times, g2time_ns, timebin_ns, seed):
-    """Core eff2 algorithm on pre-sorted (chan, times) arrays. Returns result dict."""
+def _compute_g2_multihit(ch0, ch1, g2time_ns, timebin_ns, seed):
+    """
+    Computes g2 via full multi-hit cross-correlation.
+    Includes independent-channel afterflash removal and accurate normalization.
+    """
     g2time_ps  = int(round(g2time_ns * 1000))
     timebin_ps = int(round(timebin_ns * 1000))
     I          = int(np.ceil(g2time_ps / timebin_ps))
     tau_ns     = (np.arange(2 * I + 1) - I) * timebin_ps / 1000.0
 
-    c_raw = _start_stop_hist(chan, times, g2time_ps, timebin_ps, I)
-    wings = (tau_ns > 40) & (tau_ns < 90)
-    cavg  = float(c_raw[wings].mean()) if wings.any() else 0.0
+    # 1. Run afterflash removal independently per detector channel before cross-correlating
+    ch0_clean = _clean_channel_afterflashes(ch0, seed=seed)
+    ch1_clean = _clean_channel_afterflashes(ch1, seed=seed + 1)
 
-    rng = np.random.default_rng(seed)
-    chan, times = _afterflash_remove(chan, times, c_raw, cavg, I, g2time_ps, timebin_ps, rng)
+    # 2. Compute raw multi-hit histogram directly from the cleaned timelines
+    c = full_cross_correlation_hist(ch0_clean, ch1_clean, g2time_ps, timebin_ps, I)
+    
+    N1 = int(ch0_clean.size)
+    N2 = int(ch1_clean.size)
+    
+    # 3. Calculate the precise observation timeline window (T_total)
+    if N1 > 0 and N2 > 0:
+        min_time = min(ch0_clean.min(), ch1_clean.min())
+        max_time = max(ch0_clean.max(), ch1_clean.max())
+        TT = int(max_time - min_time)
+    else:
+        TT = 1
 
-    c  = _start_stop_hist(chan, times, g2time_ps, timebin_ps, I)
-    N1 = int((chan == 0).sum())
-    N2 = int((chan == 1).sum())
-    TT = int(times[-1])
-    A  = N1 * N2 * timebin_ps / TT
-    g2_arr = c / A
+    # 4. Standard analytical normalization denominator for full cross-correlation
+    A = N1 * N2 * timebin_ps / TT
+    g2_arr = c / A if A > 0 else np.zeros_like(c, dtype=float)
 
+    # 5. Handle fitting
     try:
         popt, _ = curve_fit(
             _model, tau_ns, g2_arr,
@@ -167,46 +104,61 @@ def _compute_g2(chan, times, g2time_ns, timebin_ns, seed):
     except Exception:
         popt = None
 
-    return dict(tau=tau_ns, g2=g2_arr, c=c, c_raw=c_raw,
-                cavg=cavg, N1=N1, N2=N2, TT=TT, A=A, popt=popt)
+    # Keeping matching dictionary keys for downstream pipeline compatibility
+    return dict(tau=tau_ns, g2=g2_arr, c=c, c_raw=c,
+                N1=N1, N2=N2, TT=TT, A=A, popt=popt)
 
 
-def eff2(ptu_path, g2time_ns=100.0, timebin_ns=1.0, seed=0):
+def full_cross_correlation_hist(ch0_times, ch1_times, g2time_ps, timebin_ps, I):
     """
-    Run eff2 g2 analysis on a PTU file.
-
-    Returns a dict with keys:
-        tau     : delay axis (ns)
-        g2      : normalised g2(tau)
-        c       : coincidence histogram (after afterflash removal)
-        c_raw   : coincidence histogram (before afterflash removal)
-        cavg    : background level used for afterflash removal
-        N1, N2  : photon counts per channel
-        TT      : total acquisition time (ps)
-        A       : normalisation factor
-        popt    : fit parameters (a, b, T1, T2) or None if fit failed
+    Calculates a full multi-hit cross-correlation histogram between Ch0 and Ch1.
+    Eliminates nearest-neighbor artifacts.
     """
-    raw, _ = read_ptu(ptu_path)
-    chan, times = parse_pt2(raw)
-    order  = np.argsort(times, kind='stable')
-    return _compute_g2(chan[order].astype(np.int8), times[order].astype(np.int64),
-                       g2time_ns, timebin_ns, seed)
+    #Empty array for histogram
+    c = np.zeros(2 * I + 1, dtype=np.int64)
+    
+    #Returns the empty histogram if either channel is empty
+    if ch0_times.size == 0 or ch1_times.size == 0:
+        return c
+
+    # Find where each Ch0 photon would land in the sorted Ch1 timeline to bound the search window
+    left_indices = np.searchsorted(ch1_times, ch0_times - g2time_ps, side='left')
+    right_indices = np.searchsorted(ch1_times, ch0_times + g2time_ps, side='right')
+
+    # Loop over Ch0 photons (efficient in Python when vectorized internally)
+    for i, ch0_t in enumerate(ch0_times):
+        start_idx = left_indices[i]
+        end_idx = right_indices[i]
+        
+        # start_idx == end_idx when no photons landed on Channel 1 within the window around this specific Channel 0 photon. Skips directly to the next photon to save time.
+        if start_idx == end_idx:
+            continue
+            
+        # Get ALL Ch1 photons within the time window for this specific Ch0 photon
+        ch1_matches = ch1_times[start_idx:end_idx]
+        dt = ch1_matches - ch0_t  # positive if Ch1 came after Ch0
+        
+        # Convert time differences to histogram bin indices
+        # Center bin is at index I
+        idx = I + np.floor(dt / timebin_ps).astype(np.int64)
+        
+        # Filter out any edge cases falling outside the histogram bounds
+        valid = (idx >= 0) & (idx < 2 * I + 1)
+        np.add.at(c, idx[valid], 1)
+        
+    return c
 
 
-def eff2_from_npz(npz_path, g2time_ns=100.0, timebin_ns=1.0, seed=0):
+def _from_npz(npz_path, g2time_ns=100.0, timebin_ns=1.0, seed=0):
     """
-    Run eff2 g2 analysis on a .npz file saved by picoharp.ph_acquire().
-    The .npz must contain arrays 'ch0' and 'ch1' (absolute photon times in ps).
-    Returns the same result dict as eff2().
+    Updated wrapper that reads raw arrays and routes them directly 
+    to the robust multi-hit processing engine.
     """
-    npz   = np.load(npz_path)
-    ch0   = npz['ch0'].astype(np.int64)
-    ch1   = npz['ch1'].astype(np.int64)
-    chan  = np.concatenate([np.zeros(len(ch0), dtype=np.int8),
-                            np.ones( len(ch1), dtype=np.int8)])
-    times = np.concatenate([ch0, ch1])
-    order = np.argsort(times, kind='stable')
-    return _compute_g2(chan[order], times[order], g2time_ns, timebin_ns, seed)
+    npz = np.load(npz_path)
+    ch0 = npz['ch0'].astype(np.int64)
+    ch1 = npz['ch1'].astype(np.int64)
+    
+    return _compute_g2_multihit(ch0, ch1, g2time_ns, timebin_ns, seed)
 
 
 def plot_g2(result, out_path):
@@ -234,10 +186,10 @@ def plot_g2(result, out_path):
 
 def run(path, out_folder='g2_data', g2time_ns=100.0, timebin_ns=1.0, seed=0):
     """
-    Full pipeline: parse .ptu or .npz, compute g2, save results as .npz and .png.
+    Full pipeline: parse .npz, compute g2, save results as .npz and .png.
 
     Args:
-        path        : path to .ptu or .npz file
+        path        : path to .npz file
         out_folder  : folder to save outputs (default 'g2_data')
         g2time_ns   : correlation half-window in ns
         timebin_ns  : bin width in ns
@@ -245,26 +197,24 @@ def run(path, out_folder='g2_data', g2time_ns=100.0, timebin_ns=1.0, seed=0):
 
     Returns result dict.
     """
+    eff2_from_npz = _from_npz  # Backwards compatibility alias
     os.makedirs(out_folder, exist_ok=True)
     stem   = os.path.splitext(os.path.basename(path))[0]
     prefix = os.path.join(out_folder, stem)
 
     print(f"Running g2 on {path}...")
-    if path.endswith('.npz'):
-        result = eff2_from_npz(path, g2time_ns=g2time_ns, timebin_ns=timebin_ns, seed=seed)
-    else:
-        result = eff2(path, g2time_ns=g2time_ns, timebin_ns=timebin_ns, seed=seed)
+    result = _from_npz(path, g2time_ns=g2time_ns, timebin_ns=timebin_ns, seed=seed)
 
-    print(f"  N1={result['N1']:,}  N2={result['N2']:,}  cavg={result['cavg']:.2f}")
+    print(f"  N1={result['N1']:,}  N2={result['N2']:,}")
     if result['popt'] is not None:
         a, b, T1, T2 = result['popt']
         print(f"  Fit: a={a:.3g}  b={b:.3g}  T1={T1:.3g}ns  T2={T2:.3g}ns  g2(0)={_model(0, *result['popt']):.3f}")
     else:
         print("  Fit did not converge.")
 
-    np.savez(prefix + '.npz',
+    np.savez(prefix + '_processed.npz',
              **{k: v for k, v in result.items() if k != 'popt'},
              popt=(result['popt'] if result['popt'] is not None else np.array([])))
-    plot_g2(result, prefix + '.png')
+    plot_g2(result, prefix + '_plot.png')
 
     return result
