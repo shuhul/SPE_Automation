@@ -39,24 +39,24 @@ import g2 as g2mod
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f1-100uW-1s-fullauto-1'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f5-100uW-1s-fullauto-4'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-05-28_18-08-36'   # bandpass calibration subfolder name
 
 # Coarse scan — wide area to locate candidate emitters
-COARSE_XDIM       = 30  # um
-COARSE_YDIM       = 30   # um
+COARSE_XDIM       = 2  # um
+COARSE_YDIM       = 2   # um
 COARSE_DX         = 0.5    # um step size
 COARSE_DY         = 0.5
-COARSE_CENTER     = (0.00, 0.00)
+COARSE_CENTER     = (13.50, 10.00)
 COARSE_GRATING    = 150
 COARSE_EXPOSURE_S = 1.0
 COARSE_CENTER_WL  = 700    # nm
 
 # Fine scan — zoomed scan centred on each classified emitter
-FINE_XDIM         = 3 # 3.0
-FINE_YDIM         = 3 # 3.0
+FINE_XDIM         = 2 # 3.0
+FINE_YDIM         = 2 # 3.0
 FINE_DX           = 0.25 # 0.25
 FINE_DY           = 0.25 # 0.25
 FINE_GRATING      = 150
