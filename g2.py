@@ -23,7 +23,6 @@ def _clean_channel_afterflashes(times, min_dt_ps=9000, max_dt_ps=35000, seed=0):
     """
     if times.size <= 1:
         return times
-
     # Calculate time differences between successive photons on the SAME detector
     dt = times[1:] - times[:-1]
     
