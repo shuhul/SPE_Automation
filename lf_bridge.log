@@ -1685,3 +1685,45 @@ Exception rethrown at [0]:
 2026-06-18 19:34:45,650 INFO Setup complete, LightField ready.
 2026-06-18 19:35:50,103 INFO Shutdown command received.
 2026-06-18 19:35:51,243 INFO LightField Automation disposed cleanly.
+2026-06-18 20:03:29,706 INFO LightField bridge starting...
+2026-06-18 20:03:29,724 INFO Bridge listening on localhost:27028
+2026-06-18 20:03:41,502 INFO Connected to LightField. Experiment: 'Untitled Experiment'
+2026-06-18 20:03:47,876 ERROR Command "setup" failed (marking LF disconnected): Failed to read from an IPC Port: The pipe has been ended.
+
+
+Server stack trace: 
+   at System.Runtime.Remoting.Channels.Ipc.IpcPort.Read(Byte[] data, Int32 offset, Int32 length)
+   at System.Runtime.Remoting.Channels.SocketHandler.ReadFromSocket(Byte[] buffer, Int32 offset, Int32 count)
+   at System.Runtime.Remoting.Channels.SocketHandler.Read(Byte[] buffer, Int32 offset, Int32 count)
+   at System.Runtime.Remoting.Channels.SocketHandler.ReadAndMatchFourBytes(Byte[] buffer)
+   at System.Runtime.Remoting.Channels.Tcp.TcpSocketHandler.ReadAndMatchPreamble()
+   at System.Runtime.Remoting.Channels.Tcp.TcpSocketHandler.ReadVersionAndOperation(UInt16& operation)
+   at System.Runtime.Remoting.Channels.Ipc.IpcClientHandler.ReadHeaders()
+   at System.Runtime.Remoting.Channels.Ipc.IpcClientTransportSink.ProcessMessage(IMessage msg, ITransportHeaders requestHeaders, Stream requestStream, ITransportHeaders& responseHeaders, Stream& responseStream)
+   at System.Runtime.Remoting.Channels.BinaryClientFormatterSink.SyncProcessMessage(IMessage msg)
+
+Exception rethrown at [0]: 
+   at System.Runtime.Remoting.Proxies.RealProxy.HandleReturnMessage(IMessage reqMsg, IMessage retMsg)
+   at System.Runtime.Remoting.Proxies.RealProxy.PrivateInvoke(MessageData& msgData, Int32 type)
+   at PrincetonInstruments.LightField.AddIns.Contracts.IExperimentContract.SetValue(String setting, Object value)
+   at PrincetonInstruments.LightField.AddIns.HostSideAdapters.IExperimentContractToViewHostAdapter.SetValue(String setting, Object value)
+2026-06-18 20:05:54,412 INFO Connected to LightField. Experiment: 'PL'
+2026-06-18 20:05:54,424 INFO Setup complete, LightField ready.
+2026-06-18 21:30:46,422 INFO Setup complete, LightField ready.
+2026-06-18 23:35:54,262 INFO Setup complete, LightField ready.
+2026-06-19 03:34:32,377 INFO Setup complete, LightField ready.
+2026-06-19 05:12:02,820 INFO Setup complete, LightField ready.
+2026-06-19 15:06:11,364 INFO Setup complete, LightField ready.
+2026-06-19 15:19:24,288 INFO Setup complete, LightField ready.
+2026-06-19 16:43:34,277 INFO Setup complete, LightField ready.
+2026-06-19 17:14:35,549 INFO Setup complete, LightField ready.
+2026-06-19 17:25:38,334 INFO Setup complete, LightField ready.
+2026-06-19 17:30:37,524 INFO Setup complete, LightField ready.
+2026-06-19 17:35:16,228 INFO Setup complete, LightField ready.
+2026-06-20 10:57:08,552 INFO Setup complete, LightField ready.
+2026-06-20 11:33:25,044 INFO Setup complete, LightField ready.
+2026-06-20 12:07:23,062 INFO Setup complete, LightField ready.
+2026-06-20 12:33:24,427 INFO Setup complete, LightField ready.
+2026-06-20 12:34:53,098 INFO Setup complete, LightField ready.
+2026-06-22 10:14:17,742 INFO Setup complete, LightField ready.
+2026-06-22 10:54:21,465 INFO Setup complete, LightField ready.
