@@ -1,13 +1,16 @@
 """
-g2.py — G2 photon correlation from raw photon timestamp .npz files.
+g2.py — G2 photon correlation analysis for the automated SPE pipeline.
 
-Input .npz must contain:
-    ch0 : absolute photon arrival times on channel 0 (ps, int64)
-    ch1 : absolute photon arrival times on channel 1 (ps, int64)
-    saved by picoharp.ph_acquire()
+Algorithm  : all-pairs cross-correlation (matches original MATLAB exactly)
+Afterflash : NaN-blanked in plot and excluded from fit — no stochastic
+             photon removal (cleaner, reproducible, no seed dependency)
+Normalise  : wing mean (far-tau region where channels are uncorrelated)
+Fit        : double-exponential with free baseline g0, multi-start grid
 
-Algorithm: eff2 adjacent-pair start-stop with wing normalization.
-Memory-efficient: merges channels in-place before sorting.
+Interface used by automate.py:
+    result = g2mod.run(npz_path, out_folder=..., g2time_ns=..., timebin_ns=...)
+    result['g2_0_norm']   # (g0-b)/g0 — use for single-emitter test
+    result['popt']        # None if fit failed
 """
 
 import os
@@ -17,123 +20,142 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
+# =============================================================================
+# Module-level constants  (edit these to tune afterflash / wing regions)
+# =============================================================================
+AFTERFLASH_LOW_NS  = 15.0   # ns  start of afterflash band to blank
+AFTERFLASH_HIGH_NS = 35.0   # ns  end   of afterflash band to blank
+WING_FRAC_LOW      = 0.90   # wing starts at this fraction of g2time_ns
+WING_FRAC_HIGH     = 0.95   # wing ends   at this fraction of g2time_ns
+
+
+# =============================================================================
+# Model
+# =============================================================================
 
 def _model(x, a, b, T1, T2, g0):
     """
     Double-exponential antibunching model with free baseline g0.
-    g2(0) normalised = (g0 - b) / g0
+    g2(0) absolute   = g0 - b
+    g2(0) normalised = (g0 - b) / g0   <- use this for single-emitter test
     """
     return g0 - b * ((1 + a) * np.exp(-np.abs(x) / T1)
                          - a  * np.exp(-np.abs(x) / T2))
 
 
-def _start_stop_hist(chan, times, g2time_ps, timebin_ps, I):
-    dt  = times[1:] - times[:-1]
-    c01 = (chan[:-1] == 0) & (chan[1:] == 1) & (dt <= g2time_ps)
-    c10 = (chan[:-1] == 1) & (chan[1:] == 0) & (dt <= g2time_ps)
-    c   = np.zeros(2 * I + 1, dtype=np.int64)
-    if c01.any():
-        idx = I + (dt[c01] // timebin_ps).astype(np.int64)
-        idx = idx[(idx >= 0) & (idx < 2 * I + 1)]
-        np.add.at(c, idx, 1)
-    if c10.any():
-        idx = I - np.ceil(dt[c10] / timebin_ps).astype(np.int64)
-        idx = idx[(idx >= 0) & (idx < 2 * I + 1)]
-        np.add.at(c, idx, 1)
-    return c
+# =============================================================================
+# All-pairs cross-correlation histogram  (vectorised, chunked)
+# =============================================================================
 
-
-def _afterflash_remove(chan, times, c, cavg, I, g2time_ps, timebin_ps, rng):
+def _cross_correlation_hist(ch0, ch1, g2time_ps, timebin_ps, chunk=200_000):
     """
-    Cross-channel consecutive pair afterflash removal.
-    Targets ch0->ch1 / ch1->ch0 pairs with |tau| in 9-35 ns that exceed
-    background cavg — these are detector afterpulsing artifacts.
-    """
-    tau_ns = (np.arange(2 * I + 1) - I) * timebin_ps / 1000.0
-    dt     = times[1:] - times[:-1]
-    pair01 = (chan[:-1] == 0) & (chan[1:] == 1) & (dt < g2time_ps)
-    idx01  = I + (dt // timebin_ps).astype(np.int64)
-    pair10 = (chan[:-1] == 1) & (chan[1:] == 0) & (dt <= g2time_ps)
-    idx10  = I - np.ceil(dt / timebin_ps).astype(np.int64)
-    s01 = np.clip(idx01, 0, 2 * I)
-    s10 = np.clip(idx10, 0, 2 * I)
-    mask01 = pair01 & (np.abs(tau_ns[s01]) > 9) & (np.abs(tau_ns[s01]) < 35)
-    mask10 = pair10 & (np.abs(tau_ns[s10]) > 9) & (np.abs(tau_ns[s10]) < 35)
-    cand   = np.where(mask01 | mask10)[0]
-    if cand.size == 0:
-        return chan, times
-    cand_idx = np.where(mask01[cand], idx01[cand], idx10[cand])
-    c_at = c[np.clip(cand_idx, 0, 2 * I)]
-    p1 = rng.poisson(cavg, size=cand.size).astype(np.float64)
-    p2 = rng.poisson(c_at).astype(np.float64)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        crat = p1 / np.where(p2 == 0, np.inf, p2)
-    to_delete = cand[rng.uniform(size=cand.size) > crat] + 1
-    keep = np.ones(len(times), dtype=bool)
-    keep[to_delete] = False
-    return chan[keep], times[keep]
+    All-pairs cross-correlation histogram matching the original MATLAB algorithm.
 
+    Binning convention — right-closed (matches MATLAB exactly):
+        bin k  iff  edges[k] < dt <= edges[k+1]
+    implemented with np.searchsorted(..., side='left') - 1.
+
+    Vectorised with chunked searchsorted — seconds on tens of millions of photons.
+    """
+    I      = int(np.ceil(g2time_ps / timebin_ps))
+    n_bins = 2 * I + 1
+    hist   = np.zeros(n_bins, dtype=np.int64)
+    edges  = (np.arange(n_bins + 1, dtype=np.int64) - I) * timebin_ps
+
+    ch0 = np.sort(ch0.astype(np.int64))
+    ch1 = np.sort(ch1.astype(np.int64))
+
+    for start in range(0, len(ch0), chunk):
+        ch0c   = ch0[start:start + chunk]
+        lo     = np.searchsorted(ch1, ch0c - g2time_ps, side='left')
+        hi     = np.searchsorted(ch1, ch0c + g2time_ps, side='right')
+        counts = (hi - lo).astype(np.int64)
+        total  = int(counts.sum())
+        if total == 0:
+            continue
+
+        starts  = np.zeros(len(ch0c), dtype=np.int64)
+        np.cumsum(counts[:-1], out=starts[1:])
+        offsets = np.arange(total, dtype=np.int64) - np.repeat(starts, counts)
+        t1_idx  = np.repeat(lo.astype(np.int64), counts) + offsets
+        dt      = ch1[t1_idx] - np.repeat(ch0c, counts)
+
+        bins  = np.searchsorted(edges, dt, side='left').astype(np.int64) - 1
+        valid = (bins >= 0) & (bins < n_bins)
+        np.add.at(hist, bins[valid], 1)
+
+    return hist
+
+
+# =============================================================================
+# Fit
+# =============================================================================
 
 def _fit(tau, g2):
+    """Multi-start grid fit. Returns best popt (a, b, T1, T2, g0) or None."""
     g0_guess  = float(np.mean(g2[np.abs(tau) > 0.6 * np.abs(tau).max()]))
     best_popt, best_res = None, np.inf
-    for b0 in [0.01, 0.05, 0.1, 0.3, 0.5, 0.7, 0.9]:
+
+    for b0 in [0.3, 0.5, 0.7, 0.9]:
         for T1_0 in [1, 3, 10, 30]:
             for a0 in [0, 1]:
                 try:
                     popt, _ = curve_fit(
                         _model, tau, g2,
                         p0=[a0, b0, T1_0, 5000, g0_guess],
-                        bounds=([0, 0, 0.1, 10, 0],
-                                [np.inf, np.inf, np.inf, np.inf, np.inf]),
-                        maxfev=10000
+                        bounds=([0, 0, 0.1, 10,  0],
+                                [np.inf] * 5),
+                        maxfev=10_000
                     )
                     res = float(np.sum((_model(tau, *popt) - g2) ** 2))
                     if res < best_res:
                         best_res, best_popt = res, popt
                 except Exception:
                     continue
+
     return best_popt
 
 
-def _compute_g2(ch0, ch1, g2time_ns, timebin_ns, seed):
+# =============================================================================
+# Core computation
+# =============================================================================
+
+def _compute_g2(ch0, ch1, g2time_ns, timebin_ns):
+    """
+    Compute g2 from raw photon timestamp arrays ch0, ch1 (ps, int64).
+    Returns result dict.
+    """
     g2time_ps  = int(round(g2time_ns  * 1000))
     timebin_ps = int(round(timebin_ns * 1000))
     I          = int(np.ceil(g2time_ps / timebin_ps))
-    tau_ns     = (np.arange(2 * I + 1) - I) * timebin_ps / 1000.0
+    n_bins     = 2 * I + 1
+    tau_ns     = (np.arange(n_bins) - I) * timebin_ps / 1000.0
 
-    # Memory-efficient merge: allocate once, fill in-place
-    N0, N1_ = len(ch0), len(ch1)
-    chan  = np.empty(N0 + N1_, dtype=np.int8)
-    times = np.empty(N0 + N1_, dtype=np.int64)
-    chan[:N0] = 0;  times[:N0] = ch0
-    chan[N0:] = 1;  times[N0:] = ch1
-    order = np.argsort(times, kind='stable')
-    chan  = chan[order]
-    times = times[order]
-    del order
+    N1 = len(ch0)
+    N2 = len(ch1)
+    TT = int(max(ch0[-1], ch1[-1]))
 
-    c_raw = _start_stop_hist(chan, times, g2time_ps, timebin_ps, I)
-    wings = (tau_ns > 40) & (tau_ns < 90)
-    cavg  = float(c_raw[wings].mean()) if wings.any() else 0.0
+    print("  Building histogram...")
+    hist = _cross_correlation_hist(ch0, ch1, g2time_ps, timebin_ps)
+    print("  Done.")
 
-    rng = np.random.default_rng(seed)
-    chan, times = _afterflash_remove(chan, times, c_raw, cavg, I,
-                                     g2time_ps, timebin_ps, rng)
+    # Normalise by far-tau wing mean
+    wing_low  = g2time_ns * WING_FRAC_LOW
+    wing_high = g2time_ns * WING_FRAC_HIGH
+    wing_mask = (np.abs(tau_ns) >= wing_low) & (np.abs(tau_ns) <= wing_high)
+    c_wing    = float(hist[wing_mask].mean()) if wing_mask.any() else 1.0
+    g2_arr    = hist.astype(float) / c_wing
 
-    c  = _start_stop_hist(chan, times, g2time_ps, timebin_ps, I)
-    N1 = int((chan == 0).sum())
-    N2 = int((chan == 1).sum())
-    TT = int(times[-1])
+    # Afterflash band mask
+    af_mask = (np.abs(tau_ns) >= AFTERFLASH_LOW_NS) & \
+              (np.abs(tau_ns) <= AFTERFLASH_HIGH_NS)
 
-    # Wing normalization: correct for eff2 adjacent-pair algorithm
-    wing_mask = (tau_ns > 40) & (tau_ns < 90)
-    A  = float(c[wing_mask].mean()) if wing_mask.any() and c[wing_mask].mean() > 0 else 1.0
-    g2 = c / A
+    # Edge bin mask (boundary artifact at +/- g2time_ns)
+    edge_mask = (np.arange(n_bins) > 0) & (np.arange(n_bins) < n_bins - 1)
 
-    tau_fit = tau_ns[1:-1]
-    g2_fit  = g2[1:-1]
-    popt    = _fit(tau_fit, g2_fit)
+    # Fit on clean data: exclude afterflash band and edge bins
+    fit_mask = edge_mask & ~af_mask
+    popt = _fit(tau_ns[fit_mask], g2_arr[fit_mask])
 
     g2_0 = g2_0_norm = None
     if popt is not None:
@@ -142,17 +164,32 @@ def _compute_g2(ch0, ch1, g2time_ns, timebin_ns, seed):
         g2_0_norm = float((g0 - b) / g0)
 
     return dict(
-        tau=tau_ns, g2=g2, c=c, c_raw=c_raw,
-        cavg=cavg, N1=N1, N2=N2, TT=TT, A=A,
+        tau=tau_ns, g2=g2_arr, c=hist,
+        N1=N1, N2=N2, TT=TT,
+        wing_level=c_wing,
         popt=popt, g2_0=g2_0, g2_0_norm=g2_0_norm
     )
 
 
+# =============================================================================
+# Public API  —  called by automate.py as g2mod.run(...)
+# =============================================================================
+
 def run(path, out_folder='g2_data', g2time_ns=100.0, timebin_ns=1.0, seed=0):
     """
     Full pipeline: load raw photon .npz (ch0/ch1 in ps), compute g2,
-    save result .npz and .png. Returns result dict.
-    Use result['g2_0_norm'] in automate.py.
+    save result .npz and .png.
+
+    Args:
+        path       : path to raw photon .npz (ch0, ch1 arrays in ps)
+        out_folder : folder to save outputs
+        g2time_ns  : correlation half-window in ns
+        timebin_ns : bin width in ns
+        seed       : unused (kept for API compatibility with automate.py)
+
+    Returns result dict. Key values for automate.py:
+        g2_0_norm  : (g0-b)/g0 — use for single-emitter test (threshold < 0.5)
+        popt       : (a, b, T1, T2, g0) or None if fit failed
     """
     os.makedirs(out_folder, exist_ok=True)
     stem   = os.path.splitext(os.path.basename(path))[0]
@@ -163,55 +200,102 @@ def run(path, out_folder='g2_data', g2time_ns=100.0, timebin_ns=1.0, seed=0):
     ch0 = npz['ch0'].astype(np.int64)
     ch1 = npz['ch1'].astype(np.int64)
 
-    result = _compute_g2(ch0, ch1, g2time_ns, timebin_ns, seed)
+    result = _compute_g2(ch0, ch1, g2time_ns, timebin_ns)
 
     T_acq = result['TT'] / 1e12
     print(f"  T={T_acq:.2f}s  "
           f"N1={result['N1']:,} ({result['N1']/T_acq/1e3:.1f} kcps)  "
           f"N2={result['N2']:,} ({result['N2']/T_acq/1e3:.1f} kcps)")
+    print(f"  Wing level: {result['wing_level']:.1f} counts/bin")
+
     if result['popt'] is not None:
         a, b, T1, T2, g0 = result['popt']
-        print(f"  g2(0) = {result['g2_0_norm']:.3f}  T1={T1:.2f}ns  baseline={g0:.3f}")
+        print(f"  g2(0) = {result['g2_0_norm']:.3f}  "
+              f"T1 = {T1:.2f} ns  baseline = {g0:.3f}")
         print(f"  {'SINGLE EMITTER' if result['g2_0_norm'] < 0.5 else 'Not a single emitter'}"
               f"  [threshold g2(0) < 0.5]")
     else:
         print("  Fit did not converge.")
 
-    np.savez(prefix + '_processed.npz',
-             **{k: v for k, v in result.items()
-                if k not in ('popt', 'g2_0', 'g2_0_norm')},
-             popt     =(result['popt'] if result['popt'] is not None else np.array([])),
-             g2_0     =result['g2_0']      if result['g2_0']      is not None else np.nan,
-             g2_0_norm=result['g2_0_norm'] if result['g2_0_norm'] is not None else np.nan)
+    # ── Save result npz ───────────────────────────────────────────────────────
+    np.savez(
+        prefix + '_processed.npz',
+        tau      =result['tau'],
+        g2       =result['g2'],
+        c        =result['c'],
+        N1       =result['N1'],
+        N2       =result['N2'],
+        TT       =result['TT'],
+        wing_level=result['wing_level'],
+        popt     =(result['popt'] if result['popt'] is not None else np.array([])),
+        g2_0     =result['g2_0']      if result['g2_0']      is not None else np.nan,
+        g2_0_norm=result['g2_0_norm'] if result['g2_0_norm'] is not None else np.nan,
+    )
 
-    tau_plot = result['tau'][1:-1]
-    g2_plot  = result['g2'][1:-1]
-    popt     = result['popt']
+    # ── Plot ──────────────────────────────────────────────────────────────────
+    tau_ns  = result['tau']
+    g2_arr  = result['g2']
+    popt    = result['popt']
+    n_bins  = len(tau_ns)
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(tau_plot, g2_plot, color=[.7, .7, .7], lw=1, label='g²(τ)')
+    af_mask   = (np.abs(tau_ns) >= AFTERFLASH_LOW_NS) & \
+                (np.abs(tau_ns) <= AFTERFLASH_HIGH_NS)
+    edge_mask = (np.arange(n_bins) > 0) & (np.arange(n_bins) < n_bins - 1)
+
+    # NaN out afterflash band and edge bins for display
+    g2_plot             = g2_arr.copy()
+    g2_plot[af_mask]    = np.nan
+    g2_plot[~edge_mask] = np.nan
+
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+
+    # Shaded afterflash bands
+    for sign in [+1, -1]:
+        ax.axvspan(sign * AFTERFLASH_LOW_NS, sign * AFTERFLASH_HIGH_NS,
+                   color='#f0e6ff', alpha=0.85, zorder=0,
+                   label='Afterflash removed' if sign == 1 else None)
+
+    ax.plot(tau_ns, g2_plot, color=[0.55, 0.55, 0.55], lw=1.1,
+            label='g²(τ)', zorder=2)
+
     if popt is not None:
         a, b, T1, T2, g0 = popt
-        tf = np.linspace(tau_plot.min(), tau_plot.max(), 3000)
-        ax.plot(tf, _model(tf, *popt), 'k', lw=1.8,
-                label=f"Fit  g²(0)={result['g2_0_norm']:.3f}")
-        ax.axhline(g0,       ls='--', color='#888888', lw=0.9,
-                   label=f'Baseline={g0:.3f}')
-        ax.axhline(g0 * 0.5, ls='-.', color='r', lw=1.0,
-                   label=f'Half-baseline={g0*0.5:.3f}')
+        tf       = np.linspace(tau_ns.min(), tau_ns.max(), 6000)
+        g2_model = _model(tf, *popt).copy()
+        g2_model[(np.abs(tf) >= AFTERFLASH_LOW_NS) &
+                 (np.abs(tf) <= AFTERFLASH_HIGH_NS)] = np.nan
+
+        ax.plot(tf, g2_model, 'k', lw=1.8, zorder=3,
+                label=f'Fit  g²(0) = {result["g2_0_norm"]:.3f}')
+        ax.axhline(g0,     ls='--', color='#555', lw=0.9, zorder=1,
+                   label=f'Baseline g₀ = {g0:.3f}')
+        ax.axhline(g0*0.5, ls='-.', color='#e74c3c', lw=1.1, zorder=1,
+                   label=f'½-baseline = {g0*0.5:.3f}')
     else:
-        ax.axhline(1.0, ls='--', color='#888888', lw=0.9, label='g²=1')
-        ax.axhline(0.5, ls='-.', color='r',       lw=1.0, label='g²=0.5')
-    ax.axvline(0, ls=':', color='#cccccc', lw=0.8)
-    ax.set_xlim(tau_plot.min(), tau_plot.max())
-    ax.set_ylim(bottom=0)
+        ax.axhline(1.0, ls='--', color='#555',     lw=0.9, label='g²=1')
+        ax.axhline(0.5, ls='-.', color='#e74c3c',  lw=1.1, label='g²=0.5')
+
+    ax.axvline(0, ls=':', color='#bbb', lw=0.8, zorder=1)
+
+    ylim_top = max(1.5, float(np.nanmax(g2_plot)) * 1.1)
+    ax.set_ylim(0, ylim_top)
+
+    for sign in [+1, -1]:
+        ax.text(sign * (AFTERFLASH_LOW_NS + AFTERFLASH_HIGH_NS) / 2,
+                ylim_top * 0.93,
+                'afterflash\nremoved',
+                ha='center', va='top', fontsize=8,
+                color='#7b3fa0', style='italic')
+
+    ax.set_xlim(-g2time_ns, g2time_ns)
     ax.set_xlabel('τ (ns)', fontsize=14)
     ax.set_ylabel('g²(τ)',  fontsize=14)
-    ax.legend(fontsize=10)
+    ax.legend(fontsize=10, loc='lower right')
     fig.tight_layout()
     fig.savefig(prefix + '_plot.png', dpi=150)
     plt.close(fig)
     print(f"  Saved: {prefix}_plot.png")
+
     return result
         
 # # =============================================================================
