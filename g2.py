@@ -287,7 +287,7 @@ def run(path, out_folder='g2_data', g2time_ns=100.0, timebin_ns=1.0, seed=0):
                 ha='center', va='top', fontsize=8,
                 color='#7b3fa0', style='italic')
 
-    ax.set_xlim(-g2time_ns, g2time_ns)
+    ax.set_xlim(-100, 100)
     ax.set_xlabel('τ (ns)', fontsize=14)
     ax.set_ylabel('g²(τ)',  fontsize=14)
     ax.legend(fontsize=10, loc='lower right')
