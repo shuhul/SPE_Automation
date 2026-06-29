@@ -2,7 +2,7 @@
 Full SPE automation: coarse scan -> fine scan -> long scan -> bandpass filter setup.
 Stop with Ctrl+C — the current acquisition finishes cleanly before exiting.
 Ctrl+X — emergency stop immediately, saves partial data.
-Ctrl+K — skip current emitter immediately, move to next one.
+s — skip current emitter immediately, move to next one.
 """
 
 # Set True to open a live heatmap window after each scan;
@@ -35,7 +35,7 @@ import g2 as g2mod
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f12-100uW-1s-fullauto-1'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f13-100uW-1s-fullauto-1'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
 CAL_FOLDER   = '2026-05-28_18-08-36'
@@ -44,7 +44,7 @@ COARSE_XDIM       = 20
 COARSE_YDIM       = 20
 COARSE_DX         = 0.5
 COARSE_DY         = 0.5
-COARSE_CENTER     = (0.0, 0.00)
+COARSE_CENTER     = (0.00, 0.00)
 COARSE_GRATING    = 150
 COARSE_EXPOSURE_S = 1.0
 COARSE_CENTER_WL  = 700
@@ -71,7 +71,7 @@ G2_TIMEBIN_NS     = 0.1
 
 _stop             = False   # Ctrl+C  — finish current op then exit
 _stop_immediately = False   # Ctrl+X  — stop everything immediately
-_skip_emitter     = False   # Ctrl+K  — skip to next emitter immediately
+_skip_emitter     = False   # 's' key — skip to next emitter immediately
 
 def _handle_stop(sig, frame):
     global _stop
@@ -105,14 +105,14 @@ def _keyboard_monitor():
     """
     Background thread monitoring for:
       Ctrl+X (0x18) — emergency stop (existing behaviour)
-      Ctrl+K (0x0b) — skip current emitter immediately
+      s             — skip current emitter immediately
       q             — same as Ctrl+X
     """
     global _stop_immediately, _skip_emitter
     try:
         import msvcrt
         print('[INFO] Keyboard monitor started  '
-              '(Ctrl+X = emergency stop | Ctrl+K = skip emitter | q = quit)')
+              '(Ctrl+X = emergency stop | s = skip emitter | q = quit)')
         while _keyboard_monitor_running:
             if _monitor_paused.is_set():
                 time.sleep(0.05)
@@ -123,8 +123,8 @@ def _keyboard_monitor():
                     if key == b'\x18':          # Ctrl+X
                         print('\n[CTRL+X] EMERGENCY STOP — stopping immediately...')
                         _stop_immediately = True
-                    elif key == b'\x0b':        # Ctrl+K
-                        print('\n[CTRL+K] Skipping current emitter...')
+                    elif key.lower() == b's':   # s — skip emitter
+                        print('\n[S] Skipping current emitter...')
                         _skip_emitter = True
                     elif key.lower() == b'q':
                         print('\n[Q] Emergency stop requested...')
@@ -169,10 +169,12 @@ def _live_count_display():
             r0, r1 = picoharp.get_count_rates()
             sys.stdout.write(f'\r         Ch0: {r0:.2e} cps   Ch1: {r1:.2e} cps   ')
             sys.stdout.flush()
+            if _stop or _stop_immediately:
+                break
             if msvcrt.kbhit():
                 key = msvcrt.getch()
-                if key == b'\x0b':      # Ctrl+K — skip emitter
-                    print('\n[CTRL+K] Skipping current emitter...')
+                if key.lower() == b's':  # s — skip emitter
+                    print('\n[S] Skipping current emitter...')
                     _skip_emitter = True
                 break
             time.sleep(0.2)
@@ -190,14 +192,14 @@ def _wait_start_or_align():
     try:
         while True:
             print("  [G2] Press Enter to start acquisition, "
-                  "'a' to view live counts, or Ctrl+K to skip emitter...")
+                  "'a' to view live counts, or 's' to skip emitter...")
             while True:
                 if msvcrt.kbhit():
                     key = msvcrt.getch()
                     if key in (b'\r', b'\n'):
                         return
-                    if key == b'\x0b':      # Ctrl+K — skip emitter
-                        print('\n[CTRL+K] Skipping current emitter...')
+                    if key.lower() == b's':  # s — skip emitter
+                        print('\n[S] Skipping current emitter...')
                         _skip_emitter = True
                         return
                     if key.lower() == b'a':
@@ -208,6 +210,8 @@ def _wait_start_or_align():
                         _flush_keys()
                         break
                 else:
+                    if _stop or _stop_immediately:
+                        return
                     time.sleep(0.05)
     finally:
         _flush_keys()
@@ -403,7 +407,7 @@ def _run_spot(i, n_emitters, ex, ey, tx, ty, spot_idx, n_spots,
                     print(f'         Ch0: {r0:.2e} cps   Ch1: {r1:.2e} cps')
                     time.sleep(1.0)
                 print(f'  [G2] Target: {G2_TARGET_RECORDS:,} records  '
-                      f'(Ctrl+K saves partial and skips)')
+                      f"('s' saves partial and skips)")
 
                 _wait_start_or_align()
 
@@ -413,7 +417,7 @@ def _run_spot(i, n_emitters, ex, ey, tx, ty, spot_idx, n_spots,
                     g2_folder = os.path.join(DATA_FOLDER, FOLDERNAME,
                                              f'g2_x{tx:.2f}_y{ty:.2f}')
                     # stop_flag checks BOTH _skip_emitter and _stop_immediately
-                    # so Ctrl+K during acquisition stops ph_acquire immediately
+                    # so 's' during acquisition stops ph_acquire immediately
                     # and whatever was collected so far gets saved
                     npz_path = picoharp.ph_acquire(
                         G2_TARGET_RECORDS,
@@ -554,7 +558,7 @@ def main():
         if _stop or _stop_immediately:
             break
 
-        # Reset skip flag at the top of every emitter — a previous Ctrl+K
+        # Reset skip flag at the top of every emitter — a previous 's' press
         # should not carry over to the next emitter.
         _reset_skip()
 
@@ -655,7 +659,7 @@ def main():
             if _stop or _stop_immediately:
                 break
 
-            # Ctrl+K during a spot's processing stops that spot and moves to
+            # 's' during a spot's processing stops that spot and moves to
             # the next one within the same emitter.  At the top of each spot
             # we reset the flag so it doesn't cascade to the next spot.
             _reset_skip()
