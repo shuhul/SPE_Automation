@@ -35,16 +35,16 @@ import g2 as g2mod
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch4-f13-100uW-1s-fullauto-1'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch6-f3-100uW-1s-fullauto-1'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
-CAL_FOLDER   = '2026-05-28_18-08-36'
+CAL_FOLDER   = '2026-07-06_12-34-28'
 
-COARSE_XDIM       = 20
-COARSE_YDIM       = 20
+COARSE_XDIM       = 5
+COARSE_YDIM       = 5
 COARSE_DX         = 0.5
 COARSE_DY         = 0.5
-COARSE_CENTER     = (0.00, 0.00)
+COARSE_CENTER     = (10.0, -10.0)
 COARSE_GRATING    = 150
 COARSE_EXPOSURE_S = 1.0
 COARSE_CENTER_WL  = 700
@@ -222,17 +222,19 @@ def _wait_start_or_align():
 # SPECTRUM HELPERS
 # ============================================================================
 
-def find_emission_fwhm_center(spectrum, wl, laser_cutoff_nm=560):
+def _half_max_crossings(spectrum, wl, laser_cutoff_nm=560):
+    """Returns (left_wl, right_wl, peak_wl). left/right are None if peak is at edge."""
     mask = wl > laser_cutoff_nm
     if not mask.any():
-        return None
+        return None, None, None
     wl_m, sp_m  = wl[mask], spectrum[mask]
     peak_idx    = int(np.argmax(sp_m))
+    peak_wl     = float(wl_m[peak_idx])
     half_max    = sp_m[peak_idx] / 2.0
     left_below  = np.where(sp_m[:peak_idx] < half_max)[0]
     right_below = np.where(sp_m[peak_idx:] < half_max)[0]
     if left_below.size == 0 or right_below.size == 0:
-        return float(wl_m[peak_idx])
+        return None, None, peak_wl
     li = left_below[-1]
     x0, x1 = wl_m[li], wl_m[li + 1]
     y0, y1 = sp_m[li], sp_m[li + 1]
@@ -241,7 +243,26 @@ def find_emission_fwhm_center(spectrum, wl, laser_cutoff_nm=560):
     x0, x1 = wl_m[ri - 1], wl_m[ri]
     y0, y1 = sp_m[ri - 1], sp_m[ri]
     right_wl = x0 + (half_max - y0) * (x1 - x0) / (y1 - y0) if y1 != y0 else (x0 + x1) / 2
+    return float(left_wl), float(right_wl), peak_wl
+
+
+def find_emission_fwhm_center(spectrum, wl, laser_cutoff_nm=560):
+    left_wl, right_wl, peak_wl = _half_max_crossings(spectrum, wl, laser_cutoff_nm)
+    if peak_wl is None:
+        return None
+    if left_wl is None:
+        return peak_wl
     return float((left_wl + right_wl) / 2.0)
+
+
+def find_emission_zpl_fwhm(spectrum, wl, laser_cutoff_nm=560):
+    """Returns (zpl_nm, fwhm_nm). fwhm_nm is None if FWHM crossings not found."""
+    left_wl, right_wl, peak_wl = _half_max_crossings(spectrum, wl, laser_cutoff_nm)
+    if peak_wl is None:
+        return None, None
+    if left_wl is None:
+        return peak_wl, None
+    return float((left_wl + right_wl) / 2.0), float(right_wl - left_wl)
 
 
 def _angle_for_wavelength(target_wl):
@@ -322,10 +343,11 @@ def _run_spot(i, n_emitters, ex, ey, tx, ty, spot_idx, n_spots,
     spot_label = (f'Emitter {i+1}/{n_emitters}  spot {spot_idx+1}/{n_spots}'
                   f'  coarse=({ex:.2f},{ey:.2f})  target=({tx:.2f},{ty:.2f})')
     print(f'\n  --- {spot_label} ---')
+    fwhm = None
 
     # ── LONG SCAN ─────────────────────────────────────────────────────────────
     if _should_skip():
-        results.append((ex, ey, tx, ty, None, None, None, 'skipped before long scan'))
+        results.append((ex, ey, tx, ty, None, None, None, None, 'skipped before long scan'))
         return not (_stop or _stop_immediately)
 
     long_type      = f'long_x{tx:.2f}_y{ty:.2f}'
@@ -339,7 +361,7 @@ def _run_spot(i, n_emitters, ex, ey, tx, ty, spot_idx, n_spots,
     )
 
     if _should_skip():
-        results.append((ex, ey, tx, ty, None, None, None, 'skipped after long scan'))
+        results.append((ex, ey, tx, ty, None, None, None, None, 'skipped after long scan'))
         return not (_stop or _stop_immediately)
 
     long_path = os.path.join(DATA_FOLDER, FOLDERNAME, long_type)
@@ -350,7 +372,7 @@ def _run_spot(i, n_emitters, ex, ey, tx, ty, spot_idx, n_spots,
 
     if target_wl is None:
         print('  No emission peak found in long scan — skipping this spot.')
-        results.append((ex, ey, tx, ty, None, None, None, 'no ZPL'))
+        results.append((ex, ey, tx, ty, None, None, None, None, 'no ZPL'))
         return True   # continue to next spot
 
     # ── BANDPASS FILTER ───────────────────────────────────────────────────────
@@ -358,7 +380,7 @@ def _run_spot(i, n_emitters, ex, ey, tx, ty, spot_idx, n_spots,
     print(f'  [FILTER] ZPL={target_wl:.1f} nm')
     if angle is None:
         print(f'  No calibration for {target_wl:.1f} nm — skipping filter.')
-        results.append((ex, ey, tx, ty, target_wl, None, None, 'no cal'))
+        results.append((ex, ey, tx, ty, target_wl, None, None, None, 'no cal'))
         return True
 
     fil.flip_up()
@@ -377,13 +399,21 @@ def _run_spot(i, n_emitters, ex, ey, tx, ty, spot_idx, n_spots,
     )
     filter_long_path = os.path.join(DATA_FOLDER, FOLDERNAME, filter_long_type)
     save_spectrum_plot(filter_long_path, title=f'Filter — {spot_label}')
+    try:
+        fl_out = np.load(os.path.join(filter_long_path, 'out.npy'))
+        fl_wl  = np.load(os.path.join(filter_long_path, 'wl.npy'))
+        _, fwhm = find_emission_zpl_fwhm(fl_out[0, 0, :], fl_wl)
+    except Exception:
+        fwhm = None
+    if fwhm is not None:
+        print(f'  FWHM = {fwhm:.2f} nm')
     if MANUAL_PLOT_INTERACTION:
         plotter.open_heatmap(FOLDERNAME, filter_long_type, data_folder=DATA_FOLDER)
 
     if _should_skip():
         fil.flip_down()
         _filter_is_up = False
-        results.append((ex, ey, tx, ty, target_wl, angle, None, 'skipped before G2'))
+        results.append((ex, ey, tx, ty, target_wl, fwhm, angle, None, 'skipped before G2'))
         return not (_stop or _stop_immediately)
 
     # ── G2 MEASUREMENT ────────────────────────────────────────────────────────
@@ -452,7 +482,7 @@ def _run_spot(i, n_emitters, ex, ey, tx, ty, spot_idx, n_spots,
 
     fil.flip_down()
     _filter_is_up = False
-    results.append((ex, ey, tx, ty, target_wl, angle, g2_0, g2_status))
+    results.append((ex, ey, tx, ty, target_wl, fwhm, angle, g2_0, g2_status))
 
     # Continue to next spot unless a hard stop was requested
     return not (_stop or _stop_immediately)
@@ -581,7 +611,7 @@ def main():
                 print('  [WARNING] Autofocus failed — using current Z.')
 
         if _should_skip():
-            results.append((ex, ey, None, None, None, None, None,
+            results.append((ex, ey, None, None, None, None, None, None,
                             'skipped before fine scan'))
             continue
 
@@ -596,7 +626,7 @@ def main():
         )
 
         if _should_skip():
-            results.append((ex, ey, None, None, None, None, None,
+            results.append((ex, ey, None, None, None, None, None, None,
                             'skipped after fine scan'))
             continue
 
@@ -612,7 +642,7 @@ def main():
 
         if not os.path.exists(fine_cls_path):
             print(f'  No classification file for fine scan — skipping emitter.')
-            results.append((ex, ey, None, None, None, None, None,
+            results.append((ex, ey, None, None, None, None, None, None,
                             'no fine classified'))
             continue
 
@@ -623,7 +653,7 @@ def main():
 
         if len(ixs_f) == 0:
             print(f'  Fine scan found no classified pixels — skipping emitter.')
-            results.append((ex, ey, None, None, None, None, None,
+            results.append((ex, ey, None, None, None, None, None, None,
                             'no fine classified'))
             continue
 
@@ -643,7 +673,7 @@ def main():
                                                      data_folder=DATA_FOLDER)
                 if len(fine_spots) == 0:
                     print('  No spots selected — skipping emitter.')
-                    results.append((ex, ey, None, None, None, None, None,
+                    results.append((ex, ey, None, None, None, None, None, None,
                                     'no fine spots selected'))
                     continue
             else:
@@ -677,15 +707,16 @@ def main():
     # ── SUMMARY TABLE ─────────────────────────────────────────────────────────
     print('\n=== Results Summary ===')
     print(f'{"#":<4} {"Coarse (x,y)":<18} {"Target (x,y)":<18} '
-          f'{"ZPL (nm)":<10} {"Angle":<10} {"g²(0)":<8} Status')
-    print('-' * 88)
-    for i, (ex, ey, tx, ty, zpl, ang, g2_0, status) in enumerate(results, 1):
-        zpl_s = f'{zpl:.1f}'  if zpl  is not None else '—'
-        ang_s = f'{ang:.1f}'  if ang  is not None else '—'
-        tgt_s = f'({tx:.2f},{ty:.2f})' if tx is not None else '—'
-        g2_s  = f'{g2_0:.3f}' if g2_0 is not None else '—'
+          f'{"ZPL (nm)":<10} {"FWHM (nm)":<10} {"Angle":<10} {"g²(0)":<8} Status')
+    print('-' * 98)
+    for i, (ex, ey, tx, ty, zpl, fwhm, ang, g2_0, status) in enumerate(results, 1):
+        zpl_s  = f'{zpl:.1f}'   if zpl   is not None else '—'
+        fwhm_s = f'{fwhm:.2f}'  if fwhm  is not None else '—'
+        ang_s  = f'{ang:.1f}'   if ang   is not None else '—'
+        tgt_s  = f'({tx:.2f},{ty:.2f})' if tx is not None else '—'
+        g2_s   = f'{g2_0:.3f}'  if g2_0  is not None else '—'
         print(f'{i:<4} ({ex:.1f},{ey:.1f}){"":<8} {tgt_s:<18} '
-              f'{zpl_s:<10} {ang_s:<10} {g2_s:<8} {status}')
+              f'{zpl_s:<10} {fwhm_s:<10} {ang_s:<10} {g2_s:<8} {status}')
 
     print('\n=== Automation complete ===')
 
