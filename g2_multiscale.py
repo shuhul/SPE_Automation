@@ -17,7 +17,7 @@ SHORT_TIME_NS        = 50.0
 SHORT_BIN_NS         = 0.250
 
 MID_TIME_NS          = 100_000.0        # 100 µs
-MID_BIN_NS           = 2000.0           # 2 µs
+MID_BIN_NS           = 200.0            # 0.2 µs
 
 LONG_TIME_NS         = 10_000_000.0     # 10 ms
 LONG_BIN_NS          = 6000.0           # 6 µs
@@ -448,7 +448,23 @@ def run(data_path, out_path):
         os.makedirs(out_dir, exist_ok=True)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    print(f"\nSaved: {out_path}")
+    print(f"Saved: {out_path}")
+
+    # Save fit parameters so analyse_metastable.py can read them without re-running
+    results_path = out_path.replace('_multiscale.png', '_multiscale_results.npz')
+    bw = bound_warnings or {}
+    np.savez(results_path,
+             popt            = np.array(popt, dtype=float) if popt is not None else np.zeros(0, dtype=float),
+             fit_converged   = np.array([popt is not None]),
+             g2_0            = np.array([g2_0   if g2_0   is not None else np.nan]),
+             g2_inf          = np.array([g2_inf  if g2_inf  is not None else np.nan]),
+             wing_reliable   = np.array([wing_reliable]),
+             result_reliable = np.array([result_reliable]),
+             T1_pinned       = np.array([bool(bw.get('T1_pinned', True))]),
+             T2_pinned       = np.array([bool(bw.get('T2_pinned', True))]),
+             T3_pinned       = np.array([bool(bw.get('T3_pinned', True))]),
+             )
+    print(f"Saved: {results_path}")
 
     return dict(tau_s=tau_s, tau_m=tau_m, tau_l=tau_l,
                 g2_s=g2_s, g2_m=g2_m, g2_l=g2_l,
@@ -520,8 +536,12 @@ def batch_run(data_dir='data', from_date=None, to_date=None):
 
     print(f'Found {len(jobs)} g2 measurement(s) to process.\n')
     for i, (run_name, subdir, raw_npz, out_path) in enumerate(jobs, 1):
+        results_path = out_path.replace('_multiscale.png', '_multiscale_results.npz')
         print(f'\n{"="*60}')
         print(f'[{i}/{len(jobs)}]  {run_name}  /  {subdir}')
+        if os.path.exists(results_path):
+            print(f'  [skip] results already exist: {os.path.basename(results_path)}')
+            continue
         print(f'  input : {os.path.basename(raw_npz)}')
         print(f'  output: {os.path.basename(out_path)}')
         try:

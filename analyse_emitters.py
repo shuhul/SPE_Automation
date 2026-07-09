@@ -15,44 +15,107 @@ import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
 
 DATA_DIR = 'data'
 OUT_DIR  = 'analysis_output'
 
-# ── Spectrum helpers (self-contained — does not import automate.py) ───────────
+# ── Spectrum helpers — Gaussian fitting ───────────────────────────────────────
 
-def _half_max_crossings(spectrum, wl, laser_cutoff_nm=560):
-    """Returns (left_wl, right_wl, peak_wl). left/right are None if peak is at edge."""
+_FWHM_K = 2.0 * np.sqrt(2.0 * np.log(2.0))   # 2.3548
+
+
+def _gaussian1d(x, A, mu, sigma, bkg):
+    return A * np.exp(-(x - mu) ** 2 / (2 * sigma ** 2)) + bkg
+
+
+def _fit_zpl_gaussian(spectrum, wl, laser_cutoff_nm=560,
+                       window_nm=15.0, min_snr=3.0, max_fwhm_nm=45.0):
+    """Fit a Gaussian to the ZPL peak.
+
+    Returns (zpl_nm, fwhm_nm).  fwhm_nm is None if the fit fails or the
+    spectrum has no clear ZPL (flat / edge-clipped peak with low SNR).
+    """
     mask = wl > laser_cutoff_nm
     if not mask.any():
-        return None, None, None
-    wl_m, sp_m  = wl[mask], spectrum[mask]
-    peak_idx    = int(np.argmax(sp_m))
-    peak_wl     = float(wl_m[peak_idx])
-    half_max    = sp_m[peak_idx] / 2.0
-    left_below  = np.where(sp_m[:peak_idx] < half_max)[0]
-    right_below = np.where(sp_m[peak_idx:] < half_max)[0]
-    if left_below.size == 0 or right_below.size == 0:
-        return None, None, peak_wl
-    li = left_below[-1]
-    x0, x1 = wl_m[li], wl_m[li + 1]
-    y0, y1 = sp_m[li], sp_m[li + 1]
-    left_wl  = x0 + (half_max - y0)*(x1-x0)/(y1-y0) if y1 != y0 else (x0+x1)/2
-    ri = peak_idx + right_below[0]
-    x0, x1 = wl_m[ri-1], wl_m[ri]
-    y0, y1 = sp_m[ri-1], sp_m[ri]
-    right_wl = x0 + (half_max - y0)*(x1-x0)/(y1-y0) if y1 != y0 else (x0+x1)/2
-    return float(left_wl), float(right_wl), peak_wl
-
-
-def _extract_zpl_fwhm(spectrum, wl, laser_cutoff_nm=560):
-    """Returns (zpl_nm, fwhm_nm). fwhm_nm is None if FWHM crossings not found."""
-    left_wl, right_wl, peak_wl = _half_max_crossings(spectrum, wl, laser_cutoff_nm)
-    if peak_wl is None:
         return None, None
-    if left_wl is None:
+    wl_m, sp_m  = wl[mask], spectrum[mask]
+    pk          = int(np.argmax(sp_m))
+    peak_wl     = float(wl_m[pk])
+    peak_val    = float(sp_m[pk])
+
+    # Baseline and noise from the wings outside the fit window
+    wing   = np.abs(wl_m - peak_wl) > window_nm
+    bkg0   = float(np.median(sp_m[wing])) if wing.any() else float(np.percentile(sp_m, 10))
+    noise  = float(np.std(sp_m[wing]))    if wing.sum() > 5 else 1.0
+
+    if (peak_val - bkg0) < min_snr * max(noise, 1.0):
+        return None, None   # flat spectrum / no clear ZPL
+
+    win = np.abs(wl_m - peak_wl) <= window_nm
+    if win.sum() < 5:
+        return None, None
+
+    x, y = wl_m[win], sp_m[win]
+    A0   = peak_val - bkg0
+    p0   = [A0, peak_wl, 1.5, bkg0]
+    try:
+        popt, _ = curve_fit(
+            _gaussian1d, x, y, p0=p0,
+            bounds=([0,      peak_wl - window_nm,   0.05,            -np.inf],
+                    [A0 * 3, peak_wl + window_nm,   max_fwhm_nm / _FWHM_K, peak_val]),
+            maxfev=3000,
+        )
+        A, mu, sigma, _ = popt
+        if A <= 0:
+            return peak_wl, None
+        return float(mu), float(_FWHM_K * sigma)
+    except Exception:
         return peak_wl, None
-    return float((left_wl + right_wl) / 2.0), float(right_wl - left_wl)
+
+
+def _fit_psb_gaussian(spectrum, wl, zpl_nm,
+                       psb_min_nm=10.0, psb_max_nm=100.0,
+                       window_nm=20.0, min_snr=3.0):
+    """Fit a Gaussian to the phonon sideband (red of ZPL).
+
+    Returns (psb_nm, psb_fwhm_nm) or (None, None) if no PSB found.
+    """
+    mask = (wl > zpl_nm + psb_min_nm) & (wl < zpl_nm + psb_max_nm)
+    if not mask.any() or mask.sum() < 10:
+        return None, None
+    wl_m, sp_m = wl[mask], spectrum[mask]
+    pk      = int(np.argmax(sp_m))
+    pk_wl   = float(wl_m[pk])
+    pk_val  = float(sp_m[pk])
+
+    wing   = np.abs(wl_m - pk_wl) > window_nm
+    bkg0   = float(np.median(sp_m[wing])) if wing.any() else float(np.percentile(sp_m, 10))
+    noise  = float(np.std(sp_m[wing]))    if wing.sum() > 5 else 1.0
+
+    if (pk_val - bkg0) < min_snr * max(noise, 1.0):
+        return None, None
+
+    win = np.abs(wl_m - pk_wl) <= window_nm
+    if win.sum() < 5:
+        return None, None
+
+    x, y = wl_m[win], sp_m[win]
+    A0   = pk_val - bkg0
+    p0   = [A0, pk_wl, 5.0, bkg0]
+    try:
+        popt, _ = curve_fit(
+            _gaussian1d, x, y, p0=p0,
+            bounds=([0,      pk_wl - 15,  1.0,  -np.inf],
+                    [A0 * 3, pk_wl + 15,  30.0, pk_val]),
+            maxfev=3000,
+        )
+        A, mu, sigma, _ = popt
+        if A <= 0 or mu < zpl_nm + psb_min_nm or mu > zpl_nm + psb_max_nm:
+            return None, None
+        return float(mu), float(_FWHM_K * sigma)
+    except Exception:
+        return None, None
 
 
 # ── Data extraction ───────────────────────────────────────────────────────────
@@ -114,23 +177,29 @@ def iter_emitters(data_dir):
             except (FileNotFoundError, IndexError):
                 continue
 
-            zpl, fwhm = _extract_zpl_fwhm(spectrum, wl)
+            zpl, fwhm = _fit_zpl_gaussian(spectrum, wl)
             if zpl is None:
                 continue
+
+            psb_nm, psb_fwhm_nm = _fit_psb_gaussian(spectrum, wl, zpl)
+            psb_shift_nm = float(psb_nm - zpl) if psb_nm is not None else None
 
             cm = _COORD_RE.search(coord_str)
             x  = float(cm.group('x')) if cm else None
             y  = float(cm.group('y')) if cm else None
 
             yield {
-                'run':    run_name,
+                'run':         run_name,
                 **meta,
-                'x':      x,
-                'y':      y,
-                'ZPL_nm': zpl,
-                'FWHM_nm': fwhm,
-                'g2_0':   g2_0_norm,
-                'T1_ns':  float(T1),
+                'x':           x,
+                'y':           y,
+                'ZPL_nm':      zpl,
+                'FWHM_nm':     fwhm,
+                'PSB_nm':      psb_nm,
+                'PSB_FWHM_nm': psb_fwhm_nm,
+                'PSB_shift_nm': psb_shift_nm,
+                'g2_0':        g2_0_norm,
+                'T1_ns':       float(T1),
             }
 
 
@@ -175,13 +244,15 @@ def make_scatter_plots(df, out_dir):
     chips = df['chip'].fillna('?').astype(str)
     cmap  = _chip_palette(chips.unique())
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    fig, axes = plt.subplots(2, 3, figsize=(16, 9))
     fig.suptitle('Emitter correlation analysis', fontsize=14, fontweight='bold')
 
-    _scatter(axes[0, 0], df, 'ZPL_nm',  'g2_0',   'ZPL (nm)',   'g²(0)',     cmap)
-    _scatter(axes[0, 1], df, 'FWHM_nm', 'g2_0',   'FWHM (nm)',  'g²(0)',     cmap)
-    _scatter(axes[1, 0], df, 'T1_ns',   'ZPL_nm',  'T₁ (ns)',   'ZPL (nm)',  cmap)
-    _scatter(axes[1, 1], df, 'T1_ns',   'FWHM_nm', 'T₁ (ns)',   'FWHM (nm)', cmap)
+    _scatter(axes[0, 0], df, 'ZPL_nm',  'g2_0',        'ZPL (nm)',           'g²(0)',          cmap)
+    _scatter(axes[0, 1], df, 'FWHM_nm', 'g2_0',        'ZPL FWHM (nm)',      'g²(0)',          cmap)
+    _scatter(axes[0, 2], df, 'ZPL_nm',  'FWHM_nm',     'ZPL (nm)',           'ZPL FWHM (nm)',  cmap)
+    _scatter(axes[1, 0], df, 'T1_ns',   'ZPL_nm',      'T₁ (ns)',            'ZPL (nm)',       cmap)
+    _scatter(axes[1, 1], df, 'T1_ns',   'FWHM_nm',     'T₁ (ns)',            'ZPL FWHM (nm)', cmap)
+    _scatter(axes[1, 2], df, 'ZPL_nm',  'PSB_shift_nm', 'ZPL (nm)',          'PSB shift (nm)', cmap)
 
     # Shared chip legend at the bottom
     handles = [
@@ -193,7 +264,7 @@ def make_scatter_plots(df, out_dir):
     fig.legend(handles=handles, title='Chip', loc='lower center',
                ncol=len(cmap), fontsize=9, bbox_to_anchor=(0.5, 0.0))
 
-    fig.tight_layout(rect=[0, 0.06, 1, 1])
+    fig.tight_layout(rect=[0, 0.07, 1, 1])
     out_path = os.path.join(out_dir, 'emitter_correlations.png')
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -255,8 +326,8 @@ def main():
     print(f'\nFound {len(df)} valid emitters across {df["run"].nunique()} runs '
           f'({n_single} single emitters with g²(0) < 0.5).\n')
 
-    cols = ['chip', 'field', 'x', 'y', 'ZPL_nm', 'FWHM_nm', 'g2_0', 'T1_ns']
-    print(df[cols].to_string(index=False, float_format=lambda v: f'{v:.3f}'))
+    cols = ['chip', 'field', 'x', 'y', 'ZPL_nm', 'FWHM_nm', 'PSB_shift_nm', 'g2_0', 'T1_ns']
+    print(df[cols].to_string(index=False, float_format=lambda v: f'{v:.3f}' if pd.notna(v) else 'None'))
 
     os.makedirs(args.out_dir, exist_ok=True)
     csv_path = os.path.join(args.out_dir, 'emitter_summary.csv')
