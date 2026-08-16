@@ -172,3 +172,120 @@ g2.plot_g2(result, 'g2_data/myfile.png')
 
 #PS C:\WINDOWS\system32> cd "C:\Users\Public\Shared Confocal Files\SPE_Automation"
 #PS C:\Users\Public\Shared Confocal Files\SPE_Automation> claude --dangerously-skip-permissions
+
+
+
+# emitter_analysis.py — README
+
+## What this script does
+
+Scans a folder of automated hBN SPE characterization runs, and for every
+emitter that has both raw photon-correlation data (`g2_*` folder) and a
+matching spectrum (`long_*` folder), it:
+
+1. Recomputes **g²(τ)** directly from the raw photon timestamps (not from
+   any pre-processed file) using a ±400 ns correlation window.
+2. Fits the g²(τ) curve to a two-exponential model (antibunching + one
+   metastable/shelving timescale), with the baseline fixed at g₀ = 1.
+3. Fits the emitter's **ZPL** (zero-phonon line) in the filtered spectrum
+   with a Gaussian, extracting wavelength, FWHM, and integrated intensity.
+4. Applies quality-control gates (below) so junk fits don't leak into the
+   summary or plots.
+5. Outputs a CSV of every valid emitter, plus two summary figures.
+
+Run it with:
+
+```
+python emitter_analysis.py --data-dir data --out-dir analysis_output
+```
+
+Optional flags: `--verbose` prints why each PSB (Debye-Waller) fit was
+skipped, per emitter.
+
+---
+
+## Expected data layout
+
+```
+data/
+  <run folder>/                      e.g. 20260727-PLSPC-HT-Ch5-f16-100uW-1s-fullauto-2
+    g2_x<coord>_y<coord>/
+      <raw>.npz                      must contain ch0, ch1 (int64 ps timestamps)
+    long_x<coord>_y<coord>/
+      wl.npy                         wavelength axis
+      out.npy                        spectrum, indexed out[0, 0, :]
+```
+
+- Run folder names must match `.*HT.*fullauto.*` (case-insensitive) to be scanned at all.
+- `g2_x.._y..` and `long_x.._y..` folders are matched by their shared coordinate suffix.
+- Inside each `g2_` folder, the script picks the last raw `.npz` file
+  alphabetically that is **not** named `*_processed.npz`.
+
+If either the g2 folder or the matching `long_` folder is missing, that
+emitter is silently skipped (not counted as an error).
+
+## Output files
+
+`<out_dir>/emitter_summary.csv` — one row per valid emitter:
+
+| Column | Meaning |
+|---|---|
+| `run`, `chip`, `field`, `date`, `x`, `y` | Parsed from folder names |
+| `ZPL_nm`, `FWHM_nm` | ZPL Gaussian fit results |
+| `PSB_nm`, `PSB_FWHM_nm` | Phonon sideband Gaussian fit (if resolved) |
+| `DWF` | Debye-Waller factor = ZPL area / (ZPL area + PSB area) |
+| `g2_0` | g²(0) from the two-exponential fit |
+| `T1_ns` | Antibunching lifetime — SPE-gated, capped at `MAX_T1_NS` |
+| `T2_ns` | Metastable timescale — SPE-gated, no cap (see note above) |
+| `ZPL_intensity` | Integrated ZPL Gaussian area (a brightness proxy) |
+| `rate_kHz` | Average total photon count rate over the full acquisition (both channels), computed directly from the raw timestamps |
+
+`<out_dir>/emitter_correlations.png` — 7-panel scatter grid:
+g²(0) vs ZPL, g²(0) vs FWHM, T1 vs ZPL, T1 vs FWHM, **T1 vs emission
+rate**, T2 vs ZPL, T2 vs FWHM. Confirmed single emitters (g²(0) < 0.5) are
+marked with a star. All points use one uniform color — chip is no longer
+color-coded (see Recent changes). Axes that have a physically meaningful
+zero (FWHM, g²(0), T1, T2, rate, ZPL intensity) are forced to include the
+origin; ZPL wavelength is deliberately left un-forced since 0 nm would be
+meaningless clutter on that axis.
+
+`<out_dir>/emitter_histograms.png` — 4-panel distribution histograms:
+ZPL, FWHM, DWF, g²(0). Unchanged from earlier versions.
+
+
+# SPE Automation — README
+
+## What this does
+Automates finding and characterizing single-photon emitters: coarse scan
+→ fine scan → long spectrum → bandpass filter → g²(τ) measurement, for
+every selected emitter/spot. Runs mostly unattended, with manual
+checkpoints (mirror flips, emitter selection) where a human has to act.
+
+Run: `python spe_automation.py`. Edit the parameters block at the top
+before each session — no CLI.
+
+## Rough pipeline (per emitter)
+1. Coarse scan → select bright spot(s).
+2. Fine scan on each → select spot(s).
+3. Per spot: long spectrum → find ZPL → set bandpass filter to it →
+   filtered scan for FWHM → g²(τ) via PicoHarp (needs a manual mirror
+   flip, prompted via Telegram + terminal).
+4. Summary table at the end: coords, ZPL, FWHM, filter angle, g²(0),
+   status per spot.
+
+## Controls
+- `Ctrl+C` — finish current step, then stop
+- `Ctrl+X` / `q` — emergency stop, saves partial data
+- `s` — skip current emitter/spot
+- `a` (at G2 start) — show live counts before acquiring
+
+Windows only (`msvcrt`) — `s`/`Ctrl+X` won't work elsewhere, `Ctrl+C` still will.
+
+## Needs
+- Local modules: `lf_spec`, `sgd`, `filter`, `plotter`, `pl_spec_python`,
+  `autofocus`, `picoharp`, `g2`.
+- Calibration table at `calibration/<CAL_FOLDER>/calibration_table.npy`
+  for the filter step (skipped, not fatal, if missing).
+- PicoHarp/autofocus are optional — script warns and continues without
+  them if init fails.
+- `MANUAL_PLOT_INTERACTION = True` blocks on emitter selection plots.

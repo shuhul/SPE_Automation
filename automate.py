@@ -35,16 +35,16 @@ import g2 as g2mod
 # PARAMETERS — edit these before each session
 # ============================================================================
 
-FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-HT-Ch6-f20-100uW-1s-fullauto-3'
+FOLDERNAME   = datetime.now().strftime('%Y%m%d') + '-PLSPC-PhENOM-Ch31-f012o002-100uW-1s-2'
 CURRENT_USER = 'kristina'
 DATA_FOLDER  = 'data'
-CAL_FOLDER   = '2026-07-07_14-25-47'
+CAL_FOLDER   = '2026-07-24_12-16-02'
 
-COARSE_XDIM       = 2
-COARSE_YDIM       = 2
+COARSE_XDIM       = 5
+COARSE_YDIM       = 5
 COARSE_DX         = 0.5
 COARSE_DY         = 0.5
-COARSE_CENTER     = (-4.0, 1.50)
+COARSE_CENTER     = (5, 6.5)
 COARSE_GRATING    = 150
 COARSE_EXPOSURE_S = 1.0
 COARSE_CENTER_WL  = 700

@@ -13,3 +13,5 @@ __pycache__/
 *.png
 *.pdf
 rotation_last_pos.txt
+
+full_emitter_df.pkl

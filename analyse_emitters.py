@@ -9,15 +9,42 @@ from scipy.optimize import curve_fit
 DATA_DIR = 'data'
 OUT_DIR  = 'analysis_output'
 
-# ── 50 ns g2 calculation config ───────────────────────────────────────────────
-G2TIME_NS          = 50.0     # correlation half-window (ns)
-TIMEBIN_NS         = 0.25     # bin width (ns)
+# ── g2 calculation config ─────────────────────────────────────────────────────
+# Window widened from the original 50 ns to 400 ns: this defect isn't
+# carbon-doped, and literature for non-carbon hBN defects reports metastable
+# (T2) lifetimes more like ~100-300 ns rather than the tens-of-microseconds
+# seen for carbon-related centers. A 50 ns window has almost no leverage on
+# a ~200 ns decay; 400 ns gives several T2 time constants of margin before
+# the wing region, so the far-wing normalisation actually sits past the
+# metastable decay instead of extrapolating through it.
+G2TIME_NS          = 400.0    # correlation half-window (ns) — was 50.0
+TIMEBIN_NS         = 0.25     # bin width (ns) — unchanged, still resolves T1 fine
 AFTERFLASH_LOW_NS  = 15.0
 AFTERFLASH_HIGH_NS = 35.0
-WING_FRAC_LOW      = 0.90
-WING_FRAC_HIGH     = 0.95
+WING_FRAC_LOW      = 0.90     # wing now sits at 360-380 ns — check this is
+WING_FRAC_HIGH     = 0.95     # past your actual T2 once you see real fits
 G0_FIXED           = 1.0
 SPE_THRESHOLD      = 0.5
+
+# ── Quality-control restrictions ──────────────────────────────────────────────
+MAX_FWHM_NM = 30.0   # reject ZPL fits wider than this — not a physically
+                     # credible narrow ZPL, almost certainly a fit that
+                     # locked onto background/noise instead of the real line.
+                     # Tune down to 25.0 if you want to be stricter.
+
+MAX_T1_NS   = 20.0   # reject antibunching lifetimes above this as unphysical
+                     # for these emitters / a sign the fit didn't converge on
+                     # genuine antibunching.
+
+MIN_T2_NS   = 1.0    # reject metastable timescales at or below this — a T2
+                     # this close to T1 isn't a distinct metastable process,
+                     # it's the fit failing to separate T1 and T2 (they've
+                     # collapsed onto each other).
+
+# T1 is only reported for CONFIRMED single emitters (g²(0) < SPE_THRESHOLD)
+# and only if it also passes MAX_T1_NS — see the gating logic in
+# iter_emitters() below. For every other emitter, T1_ns is set to NaN so it
+# drops out of any downstream plot/analysis automatically.
 
 # ── Spectrum helpers — Gaussian fitting ───────────────────────────────────────
 
@@ -33,8 +60,10 @@ def _fit_zpl_gaussian(spectrum, wl, wl_min_nm=560.0, wl_max_nm=630.0,
                        window_nm=15.0, min_snr=3.0, max_fwhm_nm=45.0):
     """Fit a Gaussian to the ZPL peak, restricted to wl in [wl_min_nm, wl_max_nm].
 
-    Returns (zpl_nm, fwhm_nm, area). All None if the fit fails or the
-    spectrum has no clear ZPL (flat / edge-clipped peak with low SNR).
+    Returns (zpl_nm, fwhm_nm, area). All None if the fit fails, the
+    spectrum has no clear ZPL (flat / edge-clipped peak with low SNR),
+    or the resulting FWHM exceeds MAX_FWHM_NM (treated as an unreliable
+    fit rather than a genuine broad ZPL — see MAX_FWHM_NM above).
     Area is the integrated Gaussian intensity (A * sigma * sqrt(2*pi)),
     used downstream for the Debye-Waller factor.
     """
@@ -71,8 +100,14 @@ def _fit_zpl_gaussian(spectrum, wl, wl_min_nm=560.0, wl_max_nm=630.0,
         A, mu, sigma, _ = popt
         if A <= 0:
             return peak_wl, None, None
+        fwhm = float(_FWHM_K * sigma)
+        if fwhm > MAX_FWHM_NM:
+            # Fit "succeeded" numerically but the result isn't a credible
+            # narrow ZPL — treat the whole fit as unreliable rather than
+            # reporting a peak position we don't actually trust.
+            return None, None, None
         area = float(A * sigma * _AREA_K)
-        return float(mu), float(_FWHM_K * sigma), area
+        return float(mu), fwhm, area
     except Exception:
         return peak_wl, None, None
 
@@ -154,7 +189,7 @@ def _debye_waller(zpl_area, psb_area):
     return float(zpl_area / total)
 
 
-# ── 50 ns g2 calculation (from g2_standalone_50ns.py) ─────────────────────────
+# ── g2 calculation (adapted from g2_standalone_50ns.py, window widened) ──────
 
 def _model_g2(x, a, b, T1, T2):
     """Model with g0 fixed at G0_FIXED."""
@@ -198,30 +233,39 @@ def _cross_correlation_hist(ch0, ch1, g2time_ps, timebin_ps, chunk=200_000):
 
 
 def _fit_g2(tau, g2):
-    """Multi-start grid search for g2 fit (g0 fixed, only a, b, T1, T2 free)."""
+    """Multi-start grid search for g2 fit (g0 fixed, only a, b, T1, T2 free).
+
+    T2 seeds now span ~50-2000 ns (previously a single fixed 500 ns seed) —
+    with the window widened to resolve a sub-microsecond metastable state,
+    it's worth actually searching that range instead of hoping one seed
+    happens to be close enough to converge correctly.
+    """
     best_popt, best_res = None, np.inf
     for b0 in [0.3, 0.5, 0.7, 0.9]:
         for T1_0 in [0.5, 1, 3, 10]:
             for a0 in [0, 1]:
-                try:
-                    popt, _ = curve_fit(
-                        _model_g2, tau, g2,
-                        p0=[a0, b0, T1_0, 500.0],
-                        bounds=([0, 0, 0.05, 1.0],
-                                [10.0, G0_FIXED * 1.5 + 0.5, 100.0, 1e5]),
-                        maxfev=10_000
-                    )
-                    res = float(np.sum((_model_g2(tau, *popt) - g2) ** 2))
-                    if res < best_res:
-                        best_res, best_popt = res, popt
-                except Exception:
-                    continue
+                for T2_0 in [50.0, 150.0, 500.0, 2000.0]:
+                    try:
+                        popt, _ = curve_fit(
+                            _model_g2, tau, g2,
+                            p0=[a0, b0, T1_0, T2_0],
+                            bounds=([0, 0, 0.05, 1.0],
+                                    [10.0, G0_FIXED * 1.5 + 0.5, 100.0, 1e5]),
+                            maxfev=10_000
+                        )
+                        res = float(np.sum((_model_g2(tau, *popt) - g2) ** 2))
+                        if res < best_res:
+                            best_res, best_popt = res, popt
+                    except Exception:
+                        continue
     return best_popt
 
 
 def calculate_g2_50ns(ch0, ch1):
     """
-    Calculate g2 with 50 ns window from raw channel data.
+    Calculate g2 from raw channel data. Name kept for compatibility with
+    the rest of the pipeline; the actual window is G2TIME_NS (now 400 ns,
+    not literally 50 — see the config block at the top of this file).
     Returns dict with tau, g2, popt (fit params), g2_0 (fit value at tau=0).
     """
     g2time_ps  = int(round(G2TIME_NS  * 1000))
@@ -283,8 +327,22 @@ def _parse_run_meta(run_name):
 def iter_emitters(data_dir, verbose=False):
     """Yield one dict per emitter that has raw g2 data (.npz) and a matching spectrum.
     
-    Recalculates g2 with 50 ns window from raw data, excluding processed files.
+    Recalculates g2 with a 400 ns window from raw data, excluding processed files.
+
+    T1_ns is only populated for CONFIRMED single emitters (g2_0 < SPE_THRESHOLD)
+    whose fitted T1 also passes MAX_T1_NS; otherwise it's NaN, so a non-SPE
+    emitter or an unphysically slow "antibunching" fit never contributes a
+    T1 value downstream.
+
+    T2_ns is gated the same way, plus MIN_T2_NS: a fitted T2 at or below
+    that floor means the fit didn't actually separate T1 and T2 into two
+    distinct processes (they've collapsed onto each other), so it's
+    excluded rather than reported as a real metastable timescale.
     """
+    n_fwhm_rejected = 0
+    n_t1_excluded   = 0
+    n_t2_excluded   = 0
+
     run_pattern = re.compile(r'.*HT.*fullauto.*', re.IGNORECASE)
 
     for run_name in sorted(os.listdir(data_dir)):
@@ -318,6 +376,10 @@ def iter_emitters(data_dir, verbose=False):
                 npz = np.load(os.path.join(g2_path, raw_files[-1]))
                 ch0 = npz['ch0'].astype(np.int64)
                 ch1 = npz['ch1'].astype(np.int64)
+
+                T_acq_s  = int(max(ch0[-1], ch1[-1])) / 1e12
+                rate_khz = (len(ch0) + len(ch1)) / T_acq_s / 1000.0 if T_acq_s > 0 else np.nan
+
                 g2_result = calculate_g2_50ns(ch0, ch1)
                 if g2_result is None:
                     continue
@@ -348,6 +410,9 @@ def iter_emitters(data_dir, verbose=False):
 
             zpl, fwhm, zpl_area = _fit_zpl_gaussian(spectrum, wl)
             if zpl is None:
+                # Either no clear ZPL, or fit gave FWHM > MAX_FWHM_NM and was
+                # rejected inside _fit_zpl_gaussian — either way, not usable.
+                n_fwhm_rejected += 1
                 continue
 
             psb_nm, psb_fwhm_nm, psb_area = _fit_psb_gaussian(
@@ -358,45 +423,89 @@ def iter_emitters(data_dir, verbose=False):
             x  = float(cm.group('x')) if cm else None
             y  = float(cm.group('y')) if cm else None
 
+            # ── T1/T2 gating: only report for confirmed SPEs, and for T1
+            #     only if the fitted value itself is physically plausible ──
+            is_spe = g2_0_norm < SPE_THRESHOLD
+            if is_spe and T1 < MAX_T1_NS:
+                t1_out = float(T1)
+            else:
+                t1_out = np.nan
+                if is_spe:  # SPE, but T1 failed the sanity cap
+                    n_t1_excluded += 1
+
+            # T2 (metastable/shelving timescale) — same SPE gate as T1, plus
+            # a lower-bound sanity check: a T2 at or below MIN_T2_NS means
+            # the fit didn't actually separate T1 and T2 into two distinct
+            # processes. No upper-bound cap — T2 can legitimately hit the
+            # fit's own bound (1e5 ns) for emitters where the 400 ns window
+            # can't resolve it; that's expected, not a bug (see the window
+            # size discussion), and is a different failure mode from the
+            # lower-bound one this gate catches.
+            if is_spe and T2 > MIN_T2_NS:
+                t2_out = float(T2)
+            else:
+                t2_out = np.nan
+                if is_spe:  # SPE, but T2 collapsed onto T1 (or below)
+                    n_t2_excluded += 1
+
             yield {
-                'run':         run_name,
+                'run':          run_name,
                 **meta,
-                'x':           x,
-                'y':           y,
-                'ZPL_nm':      zpl,
-                'FWHM_nm':     fwhm,
-                'PSB_nm':      psb_nm,
-                'PSB_FWHM_nm': psb_fwhm_nm,
-                'DWF':         dwf,
-                'g2_0':        g2_0_norm,
-                'T1_ns':       float(T1),
+                'x':            x,
+                'y':            y,
+                'ZPL_nm':       zpl,
+                'FWHM_nm':      fwhm,
+                'PSB_nm':       psb_nm,
+                'PSB_FWHM_nm':  psb_fwhm_nm,
+                'DWF':          dwf,
+                'g2_0':         g2_0_norm,
+                'T1_ns':        t1_out,
+                'T2_ns':        t2_out,
+                'ZPL_intensity': zpl_area,   # integrated ZPL Gaussian area — brightness proxy
+                'rate_kHz':     rate_khz,    # overall photon count rate (both channels)
             }
+
+    if n_fwhm_rejected or n_t1_excluded or n_t2_excluded:
+        print(f'\nQuality-control exclusions:')
+        if n_fwhm_rejected:
+            print(f'  {n_fwhm_rejected} emitter(s) dropped — ZPL fit FWHM > {MAX_FWHM_NM} nm '
+                  f'(or no clear ZPL at all)')
+        if n_t1_excluded:
+            print(f'  {n_t1_excluded} confirmed SPE(s) kept, but T1 excluded — '
+                  f'fitted T1 >= {MAX_T1_NS} ns (unphysical / fit didn\'t converge '
+                  f'on genuine antibunching)')
+        if n_t2_excluded:
+            print(f'  {n_t2_excluded} confirmed SPE(s) kept, but T2 excluded — '
+                  f'fitted T2 <= {MIN_T2_NS} ns (collapsed onto T1, not a '
+                  f'distinct metastable process)')
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
 
-def _chip_palette(chips):
-    """Return {chip_label: color} with a stable, distinct color per chip."""
-    unique  = sorted(set(chips))
-    colors  = plt.cm.tab10.colors
-    return {ch: colors[i % len(colors)] for i, ch in enumerate(unique)}
+# Columns where 0 is a meaningful physical reference (a rate, width, or
+# lifetime can genuinely be zero) — axes for these are forced to include
+# the origin so differences aren't visually exaggerated by a cropped
+# baseline. ZPL_nm is deliberately excluded: it's an absolute wavelength,
+# so forcing 0 nm into view would just crush the actual ~560-630 nm data
+# range into an uninformative sliver.
+_ORIGIN_VISIBLE_COLS = {'FWHM_nm', 'g2_0', 'T1_ns', 'T2_ns', 'rate_kHz', 'ZPL_intensity'}
+
+_POINT_COLOR = '#4C72B0'   # single uniform color — chip is no longer encoded visually
 
 
-def _scatter(ax, df, xcol, ycol, xlabel, ylabel, cmap):
-    """Scatter plot coloured by chip; stars mark g²(0) < 0.5 emitters."""
-    chips  = df['chip'].fillna('?').astype(str)
-    colors = chips.map(cmap)
-    sub    = df[[xcol, ycol]].copy()
-    valid  = sub.notna().all(axis=1)
-    sub, colors = sub[valid], colors[valid]
+def _scatter(ax, df, xcol, ycol, xlabel, ylabel):
+    """Scatter plot, uniform color; stars mark g²(0) < 0.5 emitters."""
+    sub   = df[[xcol, ycol]].copy()
+    valid = sub.notna().all(axis=1)
+    sub   = sub[valid]
 
     ax.scatter(sub[xcol], sub[ycol],
-               c=colors, s=25, edgecolors='k', linewidths=0.4, zorder=3)
+               c=_POINT_COLOR, s=25, edgecolors='k', linewidths=0.4, zorder=3)
 
     se = df.loc[valid, 'g2_0'] < 0.5
     if se.any():
         ax.scatter(sub.loc[se, xcol], sub.loc[se, ycol],
-                   marker='*', s=80, c=colors[se],
+                   marker='*', s=80, c=_POINT_COLOR,
                    edgecolors='k', linewidths=0.4, zorder=4,
                    label='single emitter (g²(0) < 0.5)')
 
@@ -406,35 +515,33 @@ def _scatter(ax, df, xcol, ycol, xlabel, ylabel, cmap):
 
     ax.set_xlabel(xlabel, fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
-    ax.grid(True, alpha=0.3)
+    ax.margins(0.08)
+    if xcol in _ORIGIN_VISIBLE_COLS:
+        right = ax.get_xlim()[1]
+        ax.set_xlim(left=-0.05 * right, right=right * 1.05)
+    if ycol in _ORIGIN_VISIBLE_COLS:
+        top = ax.get_ylim()[1]
+        ax.set_ylim(bottom=-0.05 * top, top=top * 1.1)
     ax.legend(fontsize=8, loc='best')
 
 
 def make_scatter_plots(df, out_dir):
-    chips = df['chip'].fillna('?').astype(str)
-    cmap  = _chip_palette(chips.unique())
-
-    fig, axes = plt.subplots(2, 3, figsize=(16, 9))
+    fig, axes = plt.subplots(3, 3, figsize=(16, 13))
     fig.suptitle('Emitter correlation analysis', fontsize=14, fontweight='bold')
 
-    _scatter(axes[0, 0], df, 'ZPL_nm',  'g2_0',  'ZPL (nm)',      'g²(0)', cmap)
-    _scatter(axes[0, 1], df, 'FWHM_nm', 'g2_0',  'ZPL FWHM (nm)', 'g²(0)', cmap)
-    _scatter(axes[0, 2], df, 'DWF',     'g2_0',  'Debye-Waller factor', 'g²(0)', cmap)
-    _scatter(axes[1, 0], df, 'ZPL_nm',  'T1_ns', 'ZPL (nm)',      'T₁ (ns)', cmap)
-    _scatter(axes[1, 1], df, 'FWHM_nm', 'T1_ns', 'ZPL FWHM (nm)', 'T₁ (ns)', cmap)
-    axes[1, 2].axis('off')   # unused panel
+    _scatter(axes[0, 0], df, 'ZPL_nm',  'g2_0',  'ZPL (nm)',      'g²(0)')
+    _scatter(axes[0, 1], df, 'FWHM_nm', 'g2_0',  'ZPL FWHM (nm)', 'g²(0)')
+    axes[0, 2].axis('off')
 
-    # Shared chip legend at the bottom
-    handles = [
-        plt.Line2D([0], [0], marker='o', color='w',
-                   markerfacecolor=c, markeredgecolor='k',
-                   markersize=9, label=f'Ch{ch}')
-        for ch, c in cmap.items()
-    ]
-    fig.legend(handles=handles, title='Chip', loc='lower center',
-               ncol=len(cmap), fontsize=9, bbox_to_anchor=(0.5, 0.0))
+    _scatter(axes[1, 0], df, 'ZPL_nm',  'T1_ns', 'ZPL (nm)',      'T₁ (ns)  [confirmed SPE only]')
+    _scatter(axes[1, 1], df, 'FWHM_nm', 'T1_ns', 'ZPL FWHM (nm)', 'T₁ (ns)  [confirmed SPE only]')
+    _scatter(axes[1, 2], df, 'rate_kHz', 'T1_ns', 'Emission rate (kHz)', 'T₁ (ns)  [confirmed SPE only]')
 
-    fig.tight_layout(rect=[0, 0.07, 1, 1])
+    _scatter(axes[2, 0], df, 'ZPL_nm',  'T2_ns', 'ZPL (nm)',      'T₂ (ns)  [confirmed SPE only]')
+    _scatter(axes[2, 1], df, 'FWHM_nm', 'T2_ns', 'ZPL FWHM (nm)', 'T₂ (ns)  [confirmed SPE only]')
+    axes[2, 2].axis('off')
+
+    fig.tight_layout()
     out_path = os.path.join(out_dir, 'emitter_correlations.png')
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -451,7 +558,7 @@ def make_histogram_plots(df, out_dir):
 
     axes[1].hist(df['FWHM_nm'].dropna(), bins=20, edgecolor='k', color='seagreen')
     axes[1].set_xlabel('FWHM (nm)'); axes[1].set_ylabel('Count')
-    axes[1].set_title('FWHM')
+    axes[1].set_title(f'FWHM  (<= {MAX_FWHM_NM} nm)')
 
     axes[2].hist(df['DWF'].dropna(), bins=20, edgecolor='k', color='goldenrod')
     axes[2].set_xlabel('Debye-Waller factor'); axes[2].set_ylabel('Count')
@@ -499,11 +606,21 @@ def main():
         df = df[df['g2_0'] >= 0].reset_index(drop=True)
 
     n_single = int((df['g2_0'] < 0.5).sum())
+    n_t1     = int(df['T1_ns'].notna().sum())
+    n_t2     = int(df['T2_ns'].notna().sum())
     print(f'\nFound {len(df)} valid emitters across {df["run"].nunique()} runs '
-          f'({n_single} single emitters with g²(0) < 0.5).\n')
+          f'({n_single} single emitters with g²(0) < 0.5, '
+          f'{n_t1} with a reported T1, {n_t2} with a reported T2).\n')
 
-    cols = ['chip', 'field', 'x', 'y', 'ZPL_nm', 'FWHM_nm', 'DWF', 'g2_0', 'T1_ns']
+    cols = ['chip', 'field', 'x', 'y', 'ZPL_nm', 'FWHM_nm', 'DWF', 'g2_0',
+            'T1_ns', 'T2_ns', 'ZPL_intensity', 'rate_kHz']
     print(df[cols].to_string(index=False, float_format=lambda v: f'{v:.3f}' if pd.notna(v) else 'None'))
+
+    brightness_rate = df[['ZPL_intensity', 'rate_kHz']].dropna()
+    if len(brightness_rate) >= 3:
+        r = brightness_rate['ZPL_intensity'].corr(brightness_rate['rate_kHz'])
+        print(f'\nBrightness (ZPL intensity) vs emission rate: '
+              f'Pearson r = {r:.3f}  (n={len(brightness_rate)})')
 
     os.makedirs(args.out_dir, exist_ok=True)
     csv_path = os.path.join(args.out_dir, 'emitter_summary.csv')
