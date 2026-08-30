@@ -6,6 +6,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
+_trapz = getattr(np, 'trapezoid', None) or np.trapz
+
 DATA_DIR = 'data'
 OUT_DIR  = 'analysis_output'
 
@@ -30,43 +32,82 @@ SPE_THRESHOLD      = 0.5
 MAX_FWHM_NM = 30.0   # reject ZPL fits wider than this — not a physically
                      # credible narrow ZPL, almost certainly a fit that
                      # locked onto background/noise instead of the real line.
-                     # Tune down to 25.0 if you want to be stricter.
 
 MAX_T1_NS   = 20.0   # reject antibunching lifetimes above this as unphysical
-                     # for these emitters / a sign the fit didn't converge on
-                     # genuine antibunching.
 
 MIN_T2_NS   = 1.0    # reject metastable timescales at or below this — a T2
                      # this close to T1 isn't a distinct metastable process,
-                     # it's the fit failing to separate T1 and T2 (they've
-                     # collapsed onto each other).
+                     # it's the fit failing to separate T1 and T2.
 
-# T1 is only reported for CONFIRMED single emitters (g²(0) < SPE_THRESHOLD)
-# and only if it also passes MAX_T1_NS — see the gating logic in
-# iter_emitters() below. For every other emitter, T1_ns is set to NaN so it
-# drops out of any downstream plot/analysis automatically.
+# ── DWF / PSB config  (see the block comment below on why this changed) ──────
+#
+# DWF is now computed by INTEGRATION from the FINE scan cube, not by fitting
+# a Gaussian to the PSB in the long_ spectrum. Three reasons:
+#
+#   1. The PSB is not Gaussian. In hBN it is broad, asymmetric and usually
+#      multi-peaked (several phonon modes), so a single Gaussian is the wrong
+#      model regardless of SNR. DWF = I_ZPL/(I_ZPL+I_PSB) is defined with
+#      INTEGRATED intensities anyway — the PSB never needed to be fitted.
+#
+#   2. long_ scans (600 g/mm @ 595 nm) truncate the PSB for most emitters.
+#      Measured DWF success rate by ZPL: 39% for 560-570 nm, 4% for 570-585,
+#      0% for 585-600 — a clean signature of the sideband running off the
+#      detector. fine_ scans (150 g/mm @ 700 nm) cover ~415-980 nm, so the
+#      whole PSB and a clean red background anchor are both present.
+#
+#   3. BACKGROUND CHOICE DOMINATES THE ANSWER. On one real emitter the same
+#      spectrum gave DWF = 0.79 / 0.68 / 0.51 for a flat high baseline / a
+#      sloping baseline / a flat dark baseline. That spread is larger than
+#      any emitter-to-emitter variation you would be trying to measure, so
+#      the background is now fixed with two anchors and interpolated.
+#      By contrast the other choices barely matter: integrating the PSB to
+#      700 vs 900 nm moved DWF by 0.015.
+#
+# NOTE ON RESOLUTION: ZPL_nm and FWHM_nm still come from the long_ spectrum
+# (600 g/mm, 10 s) because it resolves the linewidth far better than the
+# fine cube (150 g/mm, 1 s). Only the DWF integration uses fine_. The fine
+# cube's own ZPL fit is reported separately as ZPL_fine_nm / FWHM_fine_nm so
+# the two can be cross-checked — do NOT use FWHM_fine_nm as a linewidth.
 
-# ── Spectrum helpers — Gaussian fitting ───────────────────────────────────────
+LASER_CUTOFF_NM   = 556.0            # ignore bluer: 532 laser leak + 550 LP edge
+# The blue background anchor is placed RELATIVE to the fitted ZPL, not at
+# fixed wavelengths. A fixed window (e.g. 556-578 nm) silently overlaps the
+# ZPL for any emitter bluer than ~585 nm: it then reads the ZPL's own blue
+# flank as "background", subtracts it from the whole spectrum, and wipes the
+# sideband out entirely (observed: a 575 nm emitter returned I_psb = 0 and
+# DWF = 1.0). Anchor spans [mu - BLUE_ANCHOR_SIGMA_FAR*sigma,
+# mu - BLUE_ANCHOR_SIGMA_NEAR*sigma], clipped at LASER_CUTOFF_NM.
+BLUE_ANCHOR_SIGMA_NEAR = 4.0         # inner edge, in sigma from the ZPL centre
+BLUE_ANCHOR_SIGMA_FAR  = 9.0         # outer edge
+BLUE_ANCHOR_MIN_NM     = 4.0         # need at least this wide a clean window
+RED_ANCHOR_NM     = (780.0, 950.0)   # background anchor where emission has decayed
+ZPL_INT_SIGMA     = 3.0              # ZPL integration window = mu +/- this many sigma
+PSB_END_NM        = 760.0            # integrate PSB out to here
+FINE_MATCH_TOL_UM = 0.30             # g2 coord must land within this of a fine pixel
+TRUNCATION_FRAC   = 0.15             # PSB still above this fraction of peak = truncated
+DWF_MIN_SNR       = 3.0
 
 _FWHM_K = 2.0 * np.sqrt(2.0 * np.log(2.0))   # 2.3548
-_AREA_K = np.sqrt(2.0 * np.pi)               # Gaussian area = A * sigma * sqrt(2*pi)
+_AREA_K = np.sqrt(2.0 * np.pi)
 
+
+# ── Spectrum helpers ──────────────────────────────────────────────────────────
 
 def _gaussian1d(x, A, mu, sigma, bkg):
     return A * np.exp(-(x - mu) ** 2 / (2 * sigma ** 2)) + bkg
 
 
 def _fit_zpl_gaussian(spectrum, wl, wl_min_nm=560.0, wl_max_nm=630.0,
-                       window_nm=15.0, min_snr=3.0, max_fwhm_nm=45.0):
+                       window_nm=15.0, min_snr=3.0, max_fwhm_nm=45.0,
+                       enforce_max_fwhm=True):
     """Fit a Gaussian to the ZPL peak, restricted to wl in [wl_min_nm, wl_max_nm].
 
-    Returns (zpl_nm, fwhm_nm, area). All None if the fit fails, the
-    spectrum has no clear ZPL (flat / edge-clipped peak with low SNR),
-    or the resulting FWHM exceeds MAX_FWHM_NM (treated as an unreliable
-    fit rather than a genuine broad ZPL — see MAX_FWHM_NM above).
-    Area is the integrated Gaussian intensity (A * sigma * sqrt(2*pi)),
-    used downstream for the Debye-Waller factor.
+    Returns (zpl_nm, fwhm_nm, area) or (None, None, None).
+    Also rejects fits whose peak lands within EDGE_TOL_NM of the search-window
+    edge — those are edge-clipped, not measured (this was producing a cluster
+    of emitters reported at exactly 560.000 nm).
     """
+    EDGE_TOL_NM = 1.0
     mask = (wl > wl_min_nm) & (wl < wl_max_nm)
     if not mask.any():
         return None, None, None
@@ -75,13 +116,12 @@ def _fit_zpl_gaussian(spectrum, wl, wl_min_nm=560.0, wl_max_nm=630.0,
     peak_wl     = float(wl_m[pk])
     peak_val    = float(sp_m[pk])
 
-    # Baseline and noise from the wings outside the fit window
     wing   = np.abs(wl_m - peak_wl) > window_nm
     bkg0   = float(np.median(sp_m[wing])) if wing.any() else float(np.percentile(sp_m, 10))
     noise  = float(np.std(sp_m[wing]))    if wing.sum() > 5 else 1.0
 
     if (peak_val - bkg0) < min_snr * max(noise, 1.0):
-        return None, None, None   # flat spectrum / no clear ZPL
+        return None, None, None
 
     win = np.abs(wl_m - peak_wl) <= window_nm
     if win.sum() < 5:
@@ -89,119 +129,223 @@ def _fit_zpl_gaussian(spectrum, wl, wl_min_nm=560.0, wl_max_nm=630.0,
 
     x, y = wl_m[win], sp_m[win]
     A0   = peak_val - bkg0
-    p0   = [A0, peak_wl, 1.5, bkg0]
     try:
         popt, _ = curve_fit(
-            _gaussian1d, x, y, p0=p0,
+            _gaussian1d, x, y, p0=[A0, peak_wl, 1.5, bkg0],
             bounds=([0,      max(peak_wl - window_nm, wl_min_nm), 0.05,            -np.inf],
                     [A0 * 3, min(peak_wl + window_nm, wl_max_nm), max_fwhm_nm / _FWHM_K, peak_val]),
             maxfev=3000,
         )
         A, mu, sigma, _ = popt
         if A <= 0:
-            return peak_wl, None, None
+            return None, None, None
+        # edge-clipped fit: the "peak" is pinned at the search boundary
+        if (mu - wl_min_nm) < EDGE_TOL_NM or (wl_max_nm - mu) < EDGE_TOL_NM:
+            return None, None, None
         fwhm = float(_FWHM_K * sigma)
-        if fwhm > MAX_FWHM_NM:
-            # Fit "succeeded" numerically but the result isn't a credible
-            # narrow ZPL — treat the whole fit as unreliable rather than
-            # reporting a peak position we don't actually trust.
+        if enforce_max_fwhm and fwhm > MAX_FWHM_NM:
             return None, None, None
         area = float(A * sigma * _AREA_K)
         return float(mu), fwhm, area
     except Exception:
-        return peak_wl, None, None
+        return None, None, None
 
 
-def _fit_psb_gaussian(spectrum, wl, zpl_nm,
-                       psb_min_nm=10.0, psb_max_nm=100.0,
-                       window_nm=20.0, min_snr=3.0,
-                       label=None, verbose=False):
-    """Fit a Gaussian to the phonon sideband (red of ZPL).
+# ── DWF from the FINE scan cube ───────────────────────────────────────────────
 
-    Returns (psb_nm, psb_fwhm_nm, area) or (None, None, None) if no PSB found.
-    Area is the integrated Gaussian intensity, used for the Debye-Waller factor.
+def _find_fine_pixel(run_path, tx, ty, tol_um=FINE_MATCH_TOL_UM, verbose=False):
+    """Find which fine_* cube contains the g2 target (tx, ty) and which pixel.
 
-    If verbose=True, prints the reason for a failed fit (prefixed with `label`
-    if given) so failure modes can be diagnosed per-emitter.
+    A fine cube routinely holds SEVERAL flagged emitters (classified.npy can
+    have many 1s). Matching on the g2 coordinate is what guarantees the
+    spectrum analysed is the one that produced the g2 being correlated
+    against, rather than whichever emitter happens to be brightest.
+
+    Returns dict(folder, ix, iy, x, y, dist_um, n_flagged, is_flagged) or None.
+    """
+    best = None
+    for sub in sorted(os.listdir(run_path)):
+        if not sub.startswith('fine_'):
+            continue
+        folder = os.path.join(run_path, sub)
+        try:
+            xs = np.load(os.path.join(folder, 'xs.npy'))
+            ys = np.load(os.path.join(folder, 'ys.npy'))
+        except (FileNotFoundError, OSError):
+            continue
+        ix = int(np.argmin(np.abs(xs - tx)))
+        iy = int(np.argmin(np.abs(ys - ty)))
+        dist = float(np.hypot(xs[ix] - tx, ys[iy] - ty))
+        if best is None or dist < best['dist_um']:
+            n_flag, is_flag = 0, None
+            cpath = os.path.join(folder, 'classified.npy')
+            if os.path.exists(cpath):
+                try:
+                    cls = np.load(cpath)
+                    n_flag = int(cls.sum())
+                    if iy < cls.shape[0] and ix < cls.shape[1]:
+                        is_flag = bool(cls[iy, ix] == 1)
+                except Exception:
+                    pass
+            best = dict(folder=folder, ix=ix, iy=iy,
+                        x=float(xs[ix]), y=float(ys[iy]), dist_um=dist,
+                        n_flagged=n_flag, is_flagged=is_flag)
+
+    if best is None:
+        return None
+    if best['dist_um'] > tol_um:
+        if verbose:
+            print(f'    fine-pixel match {best["dist_um"]:.2f} um from g2 target '
+                  f'({tx:.2f},{ty:.2f}) — outside tol {tol_um} um')
+        return None
+    return best
+
+
+def _dwf_by_integration(wl, sp, verbose=False, label=None):
+    """ZPL fit + sloping background + numeric PSB integration.
+
+    Returns dict(dwf, I_zpl, I_psb, zpl_fine_nm, fwhm_fine_nm, truncated,
+    bkg_blue, bkg_red, note). dwf is None when it cannot be computed, with
+    `note` saying why.
     """
     tag = f'[{label}] ' if label else ''
-    mask = (wl > zpl_nm + psb_min_nm) & (wl < zpl_nm + psb_max_nm)
-    if not mask.any() or mask.sum() < 10:
+    wl = np.asarray(wl, float); sp = np.asarray(sp, float)
+
+    # 1. fit the ZPL in the fine cube — needed for the integration window.
+    #    Never touch < LASER_CUTOFF_NM (532 laser leak + longpass edge).
+    m = (wl > LASER_CUTOFF_NM) & (wl < 640.0)
+    if m.sum() < 10:
+        return dict(dwf=None, note='fine cube has no data in ZPL range')
+    wl_m, sp_m = wl[m], sp[m]
+    pk = int(np.argmax(sp_m))
+    peak_wl, peak_val = float(wl_m[pk]), float(sp_m[pk])
+
+    off = np.abs(wl_m - peak_wl) > 13.0
+    bkg0  = float(np.median(sp_m[off])) if off.sum() > 5 else float(np.percentile(sp_m, 10))
+    noise = float(np.std(sp_m[off]))    if off.sum() > 5 else 1.0
+    snr = (peak_val - bkg0) / max(noise, 1.0)
+    if snr < DWF_MIN_SNR:
         if verbose:
-            wl_max = float(wl.max()) if wl.size else float('nan')
-            print(f'{tag}PSB skip: only {int(mask.sum())} pts in '
-                  f'[{zpl_nm + psb_min_nm:.1f}, {zpl_nm + psb_max_nm:.1f}] nm '
-                  f'(wl data only goes to {wl_max:.1f} nm)')
-        return None, None, None
-    wl_m, sp_m = wl[mask], spectrum[mask]
-    pk      = int(np.argmax(sp_m))
-    pk_wl   = float(wl_m[pk])
-    pk_val  = float(sp_m[pk])
+            print(f'{tag}DWF skip: fine-cube ZPL SNR={snr:.1f} < {DWF_MIN_SNR}')
+        return dict(dwf=None, note=f'fine-cube ZPL SNR too low ({snr:.1f})')
 
-    wing   = np.abs(wl_m - pk_wl) > window_nm
-    bkg0   = float(np.median(sp_m[wing])) if wing.any() else float(np.percentile(sp_m, 10))
-    noise  = float(np.std(sp_m[wing]))    if wing.sum() > 5 else 1.0
-
-    snr = (pk_val - bkg0) / max(noise, 1.0)
-    if snr < min_snr:
-        if verbose:
-            print(f'{tag}PSB skip: SNR={snr:.2f} < {min_snr} '
-                  f'(peak={pk_val:.1f} @ {pk_wl:.1f} nm, bkg={bkg0:.1f}, noise={noise:.1f})')
-        return None, None, None
-
-    win = np.abs(wl_m - pk_wl) <= window_nm
-    if win.sum() < 5:
-        if verbose:
-            print(f'{tag}PSB skip: only {int(win.sum())} pts within {window_nm} nm of peak')
-        return None, None, None
-
-    x, y = wl_m[win], sp_m[win]
-    A0   = pk_val - bkg0
-    p0   = [A0, pk_wl, 5.0, bkg0]
+    win = np.abs(wl_m - peak_wl) <= 13.0
+    if win.sum() < 6:
+        return dict(dwf=None, note='too few points around fine-cube ZPL')
     try:
         popt, _ = curve_fit(
-            _gaussian1d, x, y, p0=p0,
-            bounds=([0,      pk_wl - 15,  1.0,  -np.inf],
-                    [A0 * 3, pk_wl + 15,  30.0, pk_val]),
-            maxfev=3000,
-        )
-        A, mu, sigma, _ = popt
-        if A <= 0 or mu < zpl_nm + psb_min_nm or mu > zpl_nm + psb_max_nm:
-            if verbose:
-                print(f'{tag}PSB skip: fit converged but out of range '
-                      f'(A={A:.1f}, mu={mu:.1f})')
-            return None, None, None
-        area = float(A * sigma * _AREA_K)
-        return float(mu), float(_FWHM_K * sigma), area
+            _gaussian1d, wl_m[win], sp_m[win],
+            p0=[peak_val - bkg0, peak_wl, 4.0, bkg0],
+            bounds=([0, peak_wl - 13.0, 0.3, -np.inf],
+                    [(peak_val - bkg0) * 3, peak_wl + 13.0, 25.0, peak_val]),
+            maxfev=8000)
     except Exception as exc:
         if verbose:
-            print(f'{tag}PSB skip: curve_fit failed ({exc})')
-        return None, None, None
+            print(f'{tag}DWF skip: fine-cube ZPL fit failed ({exc})')
+        return dict(dwf=None, note=f'fine-cube ZPL fit failed ({exc})')
+    A, mu, sigma, _ = popt
+    if A <= 0:
+        return dict(dwf=None, note='fine-cube ZPL amplitude non-positive')
+    fwhm_fine = float(_FWHM_K * sigma)
+
+    # 2. background — anchors placed RELATIVE to the fitted ZPL
+    rm = (wl >= RED_ANCHOR_NM[0]) & (wl <= RED_ANCHOR_NM[1])
+    if rm.sum() < 5:
+        if verbose:
+            print(f'{tag}DWF skip: red anchor empty — data ends at {wl.max():.0f} nm, '
+                  f'need >= {RED_ANCHOR_NM[0]:.0f} nm')
+        return dict(dwf=None, zpl_fine_nm=float(mu), fwhm_fine_nm=fwhm_fine,
+                    note=f'red background anchor empty (data ends {wl.max():.0f} nm)')
+    xr, yr = float(wl[rm].mean()), float(np.median(sp[rm]))
+
+    b_hi = mu - BLUE_ANCHOR_SIGMA_NEAR * sigma
+    b_lo = max(LASER_CUTOFF_NM, mu - BLUE_ANCHOR_SIGMA_FAR * sigma)
+    bm = (wl >= b_lo) & (wl <= b_hi)
+    if (b_hi - b_lo) >= BLUE_ANCHOR_MIN_NM and bm.sum() >= 5:
+        xb, yb = float(wl[bm].mean()), float(np.median(sp[bm]))
+        corr = sp - (yb + (yr - yb) / (xr - xb) * (wl - xb))
+        bg_mode = f'sloping ({b_lo:.0f}-{b_hi:.0f} nm -> red)'
+    else:
+        # No clean gap between the longpass edge and the ZPL: fall back to a
+        # flat baseline from the red anchor only. This can UNDER-subtract any
+        # diffuse flake PL, which inflates the broad PSB more than the narrow
+        # ZPL and therefore biases DWF DOWNWARD — the opposite direction from
+        # truncation. Flagged so it can be filtered later.
+        yb = float('nan')
+        corr = sp - yr
+        bg_mode = 'flat-from-red (no clean blue window)'
+        if verbose:
+            print(f'{tag}DWF: blue anchor would overlap the ZPL '
+                  f'(mu={mu:.1f}, sigma={sigma:.1f}) — using {bg_mode}')
+
+    # 3. integrate — no PSB model at all
+    zlo, zhi = mu - ZPL_INT_SIGMA * sigma, mu + ZPL_INT_SIGMA * sigma
+    phi = min(PSB_END_NM, float(wl.max()))
+    zm = (wl >= zlo) & (wl <= zhi)
+    pm = (wl > zhi) & (wl <= phi)
+    if zm.sum() < 3 or pm.sum() < 5:
+        return dict(dwf=None, zpl_fine_nm=float(mu), fwhm_fine_nm=fwhm_fine,
+                    note='ZPL or PSB integration window too small')
+    I_zpl = float(_trapz(np.clip(corr[zm], 0, None), wl[zm]))
+    I_psb = float(_trapz(np.clip(corr[pm], 0, None), wl[pm]))
+    if I_zpl + I_psb <= 0:
+        return dict(dwf=None, zpl_fine_nm=float(mu), fwhm_fine_nm=fwhm_fine,
+                    note='no net intensity after background subtraction')
+
+    # 4. truncation flag — a clipped PSB inflates DWF, so mark it as a bound
+    tail = corr[(wl > phi - 15) & (wl <= phi)]
+    psb_peak = float(np.max(corr[pm])) if pm.any() else 0.0
+    truncated = bool(psb_peak > 0 and tail.size and
+                     np.median(tail) > TRUNCATION_FRAC * psb_peak)
+
+    dwf = I_zpl / (I_zpl + I_psb)
+    if I_psb <= 0 or dwf > 0.995:
+        return dict(dwf=None, zpl_fine_nm=float(mu), fwhm_fine_nm=fwhm_fine,
+                    I_zpl=I_zpl, I_psb=I_psb, bg_mode=bg_mode,
+                    note='PSB vanished after background subtraction — '
+                         'background over-subtracted, DWF rejected')
+    note = 'ok'
+    if truncated:
+        note = (f'TRUNCATED: PSB still {100*np.median(tail)/psb_peak:.0f}% of peak '
+                f'at {phi:.0f} nm — DWF is an upper bound')
+        if verbose:
+            print(f'{tag}{note}')
+
+    return dict(dwf=float(dwf), I_zpl=I_zpl, I_psb=I_psb,
+                zpl_fine_nm=float(mu), fwhm_fine_nm=fwhm_fine,
+                truncated=truncated, bkg_blue=yb, bkg_red=yr,
+                bg_mode=bg_mode, note=note)
 
 
-def _debye_waller(zpl_area, psb_area):
-    """DWF = I_ZPL / (I_ZPL + I_PSB), using integrated Gaussian areas."""
-    if zpl_area is None or psb_area is None:
-        return None
-    total = zpl_area + psb_area
-    if total <= 0:
-        return None
-    return float(zpl_area / total)
+def _dwf_from_fine(run_path, tx, ty, verbose=False, label=None):
+    """g2 target coordinate -> matching fine-cube pixel -> DWF by integration."""
+    hit = _find_fine_pixel(run_path, tx, ty, verbose=verbose)
+    if hit is None:
+        return dict(dwf=None, note='no matching fine-scan pixel')
+    try:
+        cube = np.load(os.path.join(hit['folder'], 'out.npy'))
+        wl   = np.load(os.path.join(hit['folder'], 'wl.npy'))
+    except (FileNotFoundError, OSError):
+        return dict(dwf=None, note='fine cube missing out.npy/wl.npy')
+    if cube.ndim != 3 or hit['iy'] >= cube.shape[0] or hit['ix'] >= cube.shape[1]:
+        return dict(dwf=None, note='fine cube shape unexpected')
+    res = _dwf_by_integration(wl, cube[hit['iy'], hit['ix'], :].astype(float),
+                              verbose=verbose, label=label)
+    res.update(fine_folder=os.path.basename(hit['folder']),
+               fine_match_um=hit['dist_um'],
+               fine_n_flagged=hit['n_flagged'],
+               fine_is_flagged=hit['is_flagged'])
+    return res
 
 
-# ── g2 calculation (adapted from g2_standalone_50ns.py, window widened) ──────
+# ── g2 calculation ────────────────────────────────────────────────────────────
 
 def _model_g2(x, a, b, T1, T2):
-    """Model with g0 fixed at G0_FIXED."""
     return G0_FIXED - b * ((1 + a) * np.exp(-np.abs(x) / T1)
                            - a * np.exp(-np.abs(x) / T2))
 
 
 def _cross_correlation_hist(ch0, ch1, g2time_ps, timebin_ps, chunk=200_000):
-    """
-    Right-closed bins: bin k iff edges[k] < dt <= edges[k+1]
-    (np.searchsorted(..., side='left') - 1 gives this convention).
-    """
     I      = int(np.ceil(g2time_ps / timebin_ps))
     n_bins = 2 * I + 1
     hist   = np.zeros(n_bins, dtype=np.int64)
@@ -218,28 +362,19 @@ def _cross_correlation_hist(ch0, ch1, g2time_ps, timebin_ps, chunk=200_000):
         total  = int(counts.sum())
         if total == 0:
             continue
-
         starts  = np.zeros(len(ch0c), dtype=np.int64)
         np.cumsum(counts[:-1], out=starts[1:])
         offsets = np.arange(total, dtype=np.int64) - np.repeat(starts, counts)
         t1_idx  = np.repeat(lo.astype(np.int64), counts) + offsets
         dt      = ch1[t1_idx] - np.repeat(ch0c, counts)
-
         bins  = np.searchsorted(edges, dt, side='left').astype(np.int64) - 1
         valid = (bins >= 0) & (bins < n_bins)
         np.add.at(hist, bins[valid], 1)
-
     return hist
 
 
 def _fit_g2(tau, g2):
-    """Multi-start grid search for g2 fit (g0 fixed, only a, b, T1, T2 free).
-
-    T2 seeds now span ~50-2000 ns (previously a single fixed 500 ns seed) —
-    with the window widened to resolve a sub-microsecond metastable state,
-    it's worth actually searching that range instead of hoping one seed
-    happens to be close enough to converge correctly.
-    """
+    """Multi-start grid search (g0 fixed, only a, b, T1, T2 free)."""
     best_popt, best_res = None, np.inf
     for b0 in [0.3, 0.5, 0.7, 0.9]:
         for T1_0 in [0.5, 1, 3, 10]:
@@ -247,12 +382,10 @@ def _fit_g2(tau, g2):
                 for T2_0 in [50.0, 150.0, 500.0, 2000.0]:
                     try:
                         popt, _ = curve_fit(
-                            _model_g2, tau, g2,
-                            p0=[a0, b0, T1_0, T2_0],
+                            _model_g2, tau, g2, p0=[a0, b0, T1_0, T2_0],
                             bounds=([0, 0, 0.05, 1.0],
                                     [10.0, G0_FIXED * 1.5 + 0.5, 100.0, 1e5]),
-                            maxfev=10_000
-                        )
+                            maxfev=10_000)
                         res = float(np.sum((_model_g2(tau, *popt) - g2) ** 2))
                         if res < best_res:
                             best_res, best_popt = res, popt
@@ -261,54 +394,33 @@ def _fit_g2(tau, g2):
     return best_popt
 
 
-def calculate_g2_50ns(ch0, ch1):
-    """
-    Calculate g2 from raw channel data. Name kept for compatibility with
-    the rest of the pipeline; the actual window is G2TIME_NS (now 400 ns,
-    not literally 50 — see the config block at the top of this file).
-    Returns dict with tau, g2, popt (fit params), g2_0 (fit value at tau=0).
-    """
+def calculate_g2(ch0, ch1):
+    """Calculate g2 over the G2TIME_NS window from raw channel data."""
     g2time_ps  = int(round(G2TIME_NS  * 1000))
     timebin_ps = int(round(TIMEBIN_NS * 1000))
     I          = int(np.ceil(g2time_ps / timebin_ps))
     n_bins     = 2 * I + 1
     tau_ns     = (np.arange(n_bins) - I) * timebin_ps / 1000.0
 
-    # Build histogram
     hist = _cross_correlation_hist(ch0, ch1, g2time_ps, timebin_ps)
 
-    # Far-wing normalisation
-    wing_low  = G2TIME_NS * WING_FRAC_LOW
-    wing_high = G2TIME_NS * WING_FRAC_HIGH
-    wing_mask = (np.abs(tau_ns) >= wing_low) & (np.abs(tau_ns) <= wing_high)
+    wing_mask = (np.abs(tau_ns) >= G2TIME_NS * WING_FRAC_LOW) & \
+                (np.abs(tau_ns) <= G2TIME_NS * WING_FRAC_HIGH)
     wing_vals = hist[wing_mask]
     if wing_vals.size == 0:
         return None
-    c_wing    = float(wing_vals.mean())
+    c_wing = float(wing_vals.mean())
     if c_wing <= 0:
         return None
 
     g2_arr = hist.astype(float) / c_wing
-
-    # Fit: exclude afterflash region and edges
     af_mask   = (np.abs(tau_ns) >= AFTERFLASH_LOW_NS) & (np.abs(tau_ns) <= AFTERFLASH_HIGH_NS)
     edge_mask = (np.arange(n_bins) > 0) & (np.arange(n_bins) < n_bins - 1)
     fit_mask  = edge_mask & ~af_mask
 
     popt = _fit_g2(tau_ns[fit_mask], g2_arr[fit_mask])
-
-    g2_0 = None
-    if popt is not None:
-        a, b, T1, T2 = popt
-        g2_0 = float(G0_FIXED - b)
-    
-    return {
-        'tau': tau_ns,
-        'g2': g2_arr,
-        'popt': popt,
-        'g2_0': g2_0,
-        'wing_level': c_wing,
-    }
+    g2_0 = float(G0_FIXED - popt[1]) if popt is not None else None
+    return dict(tau=tau_ns, g2=g2_arr, popt=popt, g2_0=g2_0, wing_level=c_wing)
 
 
 # ── Data extraction ───────────────────────────────────────────────────────────
@@ -325,23 +437,22 @@ def _parse_run_meta(run_name):
 
 
 def iter_emitters(data_dir, verbose=False):
-    """Yield one dict per emitter that has raw g2 data (.npz) and a matching spectrum.
-    
-    Recalculates g2 with a 400 ns window from raw data, excluding processed files.
+    """Yield one dict per emitter with raw g2 data and a matching spectrum.
 
-    T1_ns is only populated for CONFIRMED single emitters (g2_0 < SPE_THRESHOLD)
-    whose fitted T1 also passes MAX_T1_NS; otherwise it's NaN, so a non-SPE
-    emitter or an unphysically slow "antibunching" fit never contributes a
-    T1 value downstream.
+    ZPL_nm / FWHM_nm come from the long_ spectrum (600 g/mm, 10 s — resolves
+    the linewidth). DWF comes from the fine_ cube (150 g/mm, ~415-980 nm —
+    the only place the whole PSB is actually recorded), matched to this
+    emitter's g2 coordinate so multi-emitter fine cubes resolve correctly.
 
-    T2_ns is gated the same way, plus MIN_T2_NS: a fitted T2 at or below
-    that floor means the fit didn't actually separate T1 and T2 into two
-    distinct processes (they've collapsed onto each other), so it's
-    excluded rather than reported as a real metastable timescale.
+    T1_ns / T2_ns are only populated for CONFIRMED single emitters
+    (g2_0 < SPE_THRESHOLD) that also pass MAX_T1_NS / MIN_T2_NS.
     """
-    n_fwhm_rejected = 0
+    n_zpl_rejected  = 0
     n_t1_excluded   = 0
     n_t2_excluded   = 0
+    n_dwf_ok        = 0
+    n_dwf_trunc     = 0
+    dwf_fail_reason = {}
 
     run_pattern = re.compile(r'.*HT.*fullauto.*', re.IGNORECASE)
 
@@ -364,154 +475,147 @@ def iter_emitters(data_dir, verbose=False):
             if lf_dir not in subfolders:
                 continue
 
-            # ── Find raw g2 data (.npz file, not _processed) ──
             g2_path = os.path.join(run_path, subdir)
-            raw_files = sorted(f for f in os.listdir(g2_path) 
-                              if f.endswith('.npz') and '_processed' not in f)
+            raw_files = sorted(f for f in os.listdir(g2_path)
+                               if f.endswith('.npz') and '_processed' not in f)
             if not raw_files:
-                continue
-
-            # Load raw data and recalculate g2
-            try:
-                npz = np.load(os.path.join(g2_path, raw_files[-1]))
-                ch0 = npz['ch0'].astype(np.int64)
-                ch1 = npz['ch1'].astype(np.int64)
-
-                T_acq_s  = int(max(ch0[-1], ch1[-1])) / 1e12
-                rate_khz = (len(ch0) + len(ch1)) / T_acq_s / 1000.0 if T_acq_s > 0 else np.nan
-
-                g2_result = calculate_g2_50ns(ch0, ch1)
-                if g2_result is None:
-                    continue
-                
-                popt = g2_result['popt']
-                g2_0_norm = g2_result['g2_0']
-                
-                if popt is None or g2_0_norm is None:
-                    continue
-                    
-                a, b, T1, T2 = popt
-                
-            except Exception as e:
-                if verbose:
-                    print(f"Skipped {run_name}/{coord_str}: {e}")
-                continue
-
-            # ── filtered spectrum → ZPL + FWHM (Gaussian fit, 560-630 nm) ──
-            lf_path = os.path.join(run_path, lf_dir)
-            try:
-                wl       = np.load(os.path.join(lf_path, 'wl.npy'))
-                out      = np.load(os.path.join(lf_path, 'out.npy'))
-                spectrum = out[0, 0, :]
-            except (FileNotFoundError, IndexError):
                 continue
 
             label = f'{run_name}/{coord_str}'
 
-            zpl, fwhm, zpl_area = _fit_zpl_gaussian(spectrum, wl)
-            if zpl is None:
-                # Either no clear ZPL, or fit gave FWHM > MAX_FWHM_NM and was
-                # rejected inside _fit_zpl_gaussian — either way, not usable.
-                n_fwhm_rejected += 1
+            try:
+                npz = np.load(os.path.join(g2_path, raw_files[-1]))
+                ch0 = npz['ch0'].astype(np.int64)
+                ch1 = npz['ch1'].astype(np.int64)
+                T_acq_s  = int(max(ch0[-1], ch1[-1])) / 1e12
+                rate_khz = (len(ch0) + len(ch1)) / T_acq_s / 1000.0 if T_acq_s > 0 else np.nan
+                g2_result = calculate_g2(ch0, ch1)
+                if g2_result is None or g2_result['popt'] is None or g2_result['g2_0'] is None:
+                    continue
+                popt = g2_result['popt']
+                g2_0_norm = g2_result['g2_0']
+                a, b, T1, T2 = popt
+            except Exception as e:
+                if verbose:
+                    print(f'Skipped {label}: {e}')
                 continue
 
-            psb_nm, psb_fwhm_nm, psb_area = _fit_psb_gaussian(
-                spectrum, wl, zpl, label=label, verbose=verbose)
-            dwf = _debye_waller(zpl_area, psb_area)
+            # ── ZPL + FWHM from the long_ spectrum (high resolution) ────────
+            lf_path = os.path.join(run_path, lf_dir)
+            try:
+                wl_long  = np.load(os.path.join(lf_path, 'wl.npy'))
+                out_long = np.load(os.path.join(lf_path, 'out.npy'))
+                spectrum = out_long[0, 0, :]
+            except (FileNotFoundError, IndexError, OSError):
+                continue
 
+            zpl, fwhm, zpl_area = _fit_zpl_gaussian(spectrum, wl_long)
+            if zpl is None:
+                n_zpl_rejected += 1
+                continue
+
+            # ── DWF from the fine_ cube, matched on the g2 coordinate ───────
             cm = _COORD_RE.search(coord_str)
             x  = float(cm.group('x')) if cm else None
             y  = float(cm.group('y')) if cm else None
 
-            # ── T1/T2 gating: only report for confirmed SPEs, and for T1
-            #     only if the fitted value itself is physically plausible ──
+            dwf_res = dict(dwf=None, note='no coords parsed')
+            if x is not None and y is not None:
+                dwf_res = _dwf_from_fine(run_path, x, y, verbose=verbose, label=label)
+            if dwf_res.get('dwf') is not None:
+                n_dwf_ok += 1
+                if dwf_res.get('truncated'):
+                    n_dwf_trunc += 1
+            else:
+                key = str(dwf_res.get('note', 'unknown')).split('(')[0].strip()
+                dwf_fail_reason[key] = dwf_fail_reason.get(key, 0) + 1
+
+            # ── T1/T2 gating ───────────────────────────────────────────────
             is_spe = g2_0_norm < SPE_THRESHOLD
             if is_spe and T1 < MAX_T1_NS:
                 t1_out = float(T1)
             else:
                 t1_out = np.nan
-                if is_spe:  # SPE, but T1 failed the sanity cap
+                if is_spe:
                     n_t1_excluded += 1
 
-            # T2 (metastable/shelving timescale) — same SPE gate as T1, plus
-            # a lower-bound sanity check: a T2 at or below MIN_T2_NS means
-            # the fit didn't actually separate T1 and T2 into two distinct
-            # processes. No upper-bound cap — T2 can legitimately hit the
-            # fit's own bound (1e5 ns) for emitters where the 400 ns window
-            # can't resolve it; that's expected, not a bug (see the window
-            # size discussion), and is a different failure mode from the
-            # lower-bound one this gate catches.
             if is_spe and T2 > MIN_T2_NS:
                 t2_out = float(T2)
             else:
                 t2_out = np.nan
-                if is_spe:  # SPE, but T2 collapsed onto T1 (or below)
+                if is_spe:
                     n_t2_excluded += 1
 
             yield {
-                'run':          run_name,
+                'run':            run_name,
                 **meta,
-                'x':            x,
-                'y':            y,
-                'ZPL_nm':       zpl,
-                'FWHM_nm':      fwhm,
-                'PSB_nm':       psb_nm,
-                'PSB_FWHM_nm':  psb_fwhm_nm,
-                'DWF':          dwf,
-                'g2_0':         g2_0_norm,
-                'T1_ns':        t1_out,
-                'T2_ns':        t2_out,
-                'ZPL_intensity': zpl_area,   # integrated ZPL Gaussian area — brightness proxy
-                'rate_kHz':     rate_khz,    # overall photon count rate (both channels)
+                'x':              x,
+                'y':              y,
+                'ZPL_nm':         zpl,                       # from long_ (600 g/mm)
+                'FWHM_nm':        fwhm,                      # from long_ (600 g/mm)
+                'DWF':            dwf_res.get('dwf'),        # from fine_ by integration
+                'DWF_truncated':  dwf_res.get('truncated'),
+                'I_zpl':          dwf_res.get('I_zpl'),
+                'I_psb':          dwf_res.get('I_psb'),
+                'ZPL_fine_nm':    dwf_res.get('zpl_fine_nm'),   # cross-check only
+                'FWHM_fine_nm':   dwf_res.get('fwhm_fine_nm'),  # NOT a linewidth (150 g/mm)
+                'fine_folder':    dwf_res.get('fine_folder'),
+                'fine_match_um':  dwf_res.get('fine_match_um'),
+                'fine_n_flagged': dwf_res.get('fine_n_flagged'),
+                'fine_is_flagged': dwf_res.get('fine_is_flagged'),
+                'dwf_bg_mode':    dwf_res.get('bg_mode'),
+                'dwf_note':       dwf_res.get('note'),
+                'g2_0':           g2_0_norm,
+                'T1_ns':          t1_out,
+                'T2_ns':          t2_out,
+                'ZPL_intensity':  zpl_area,
+                'rate_kHz':       rate_khz,
             }
 
-    if n_fwhm_rejected or n_t1_excluded or n_t2_excluded:
-        print(f'\nQuality-control exclusions:')
-        if n_fwhm_rejected:
-            print(f'  {n_fwhm_rejected} emitter(s) dropped — ZPL fit FWHM > {MAX_FWHM_NM} nm '
-                  f'(or no clear ZPL at all)')
-        if n_t1_excluded:
-            print(f'  {n_t1_excluded} confirmed SPE(s) kept, but T1 excluded — '
-                  f'fitted T1 >= {MAX_T1_NS} ns (unphysical / fit didn\'t converge '
-                  f'on genuine antibunching)')
-        if n_t2_excluded:
-            print(f'  {n_t2_excluded} confirmed SPE(s) kept, but T2 excluded — '
-                  f'fitted T2 <= {MIN_T2_NS} ns (collapsed onto T1, not a '
-                  f'distinct metastable process)')
+    print('\nQuality-control exclusions:')
+    if n_zpl_rejected:
+        print(f'  {n_zpl_rejected} emitter(s) dropped — no clear ZPL, FWHM > {MAX_FWHM_NM} nm, '
+              f'or fit pinned at the search-window edge')
+    if n_t1_excluded:
+        print(f'  {n_t1_excluded} confirmed SPE(s) kept, but T1 excluded (>= {MAX_T1_NS} ns)')
+    if n_t2_excluded:
+        print(f'  {n_t2_excluded} confirmed SPE(s) kept, but T2 excluded (<= {MIN_T2_NS} ns)')
+    print(f'\nDWF (from fine_ cube, by integration):')
+    print(f'  {n_dwf_ok} computed  ({n_dwf_trunc} of them TRUNCATED — upper bounds only)')
+    if dwf_fail_reason:
+        print('  failures:')
+        for k, v in sorted(dwf_fail_reason.items(), key=lambda kv: -kv[1]):
+            print(f'    {v:3d}  {k}')
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
 
-# Columns where 0 is a meaningful physical reference (a rate, width, or
-# lifetime can genuinely be zero) — axes for these are forced to include
-# the origin so differences aren't visually exaggerated by a cropped
-# baseline. ZPL_nm is deliberately excluded: it's an absolute wavelength,
-# so forcing 0 nm into view would just crush the actual ~560-630 nm data
-# range into an uninformative sliver.
-_ORIGIN_VISIBLE_COLS = {'FWHM_nm', 'g2_0', 'T1_ns', 'T2_ns', 'rate_kHz', 'ZPL_intensity'}
-
-_POINT_COLOR = '#4C72B0'   # single uniform color — chip is no longer encoded visually
+_ORIGIN_VISIBLE_COLS = {'FWHM_nm', 'g2_0', 'T1_ns', 'T2_ns', 'rate_kHz',
+                        'ZPL_intensity', 'DWF'}
+_POINT_COLOR = '#4C72B0'
 
 
 def _scatter(ax, df, xcol, ycol, xlabel, ylabel):
-    """Scatter plot, uniform color; stars mark g²(0) < 0.5 emitters."""
     sub   = df[[xcol, ycol]].copy()
     valid = sub.notna().all(axis=1)
     sub   = sub[valid]
+    if sub.empty:
+        ax.text(0.5, 0.5, f'no data\n({xcol} vs {ycol})', ha='center', va='center',
+                transform=ax.transAxes, fontsize=9, color='0.5')
+        ax.set_xlabel(xlabel, fontsize=11); ax.set_ylabel(ylabel, fontsize=11)
+        return
 
-    ax.scatter(sub[xcol], sub[ycol],
-               c=_POINT_COLOR, s=25, edgecolors='k', linewidths=0.4, zorder=3)
+    ax.scatter(sub[xcol], sub[ycol], c=_POINT_COLOR, s=25,
+               edgecolors='k', linewidths=0.4, zorder=3)
 
     se = df.loc[valid, 'g2_0'] < 0.5
     if se.any():
-        ax.scatter(sub.loc[se, xcol], sub.loc[se, ycol],
-                   marker='*', s=80, c=_POINT_COLOR,
-                   edgecolors='k', linewidths=0.4, zorder=4,
+        ax.scatter(sub.loc[se, xcol], sub.loc[se, ycol], marker='*', s=80,
+                   c=_POINT_COLOR, edgecolors='k', linewidths=0.4, zorder=4,
                    label='single emitter (g²(0) < 0.5)')
 
     if ycol == 'g2_0':
-        ax.axhline(0.5, ls='--', color='#e74c3c', lw=1.2, zorder=2,
-                   label='g²(0) = 0.5')
+        ax.axhline(0.5, ls='--', color='#e74c3c', lw=1.2, zorder=2, label='g²(0) = 0.5')
 
     ax.set_xlabel(xlabel, fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
@@ -531,15 +635,15 @@ def make_scatter_plots(df, out_dir):
 
     _scatter(axes[0, 0], df, 'ZPL_nm',  'g2_0',  'ZPL (nm)',      'g²(0)')
     _scatter(axes[0, 1], df, 'FWHM_nm', 'g2_0',  'ZPL FWHM (nm)', 'g²(0)')
-    axes[0, 2].axis('off')
+    _scatter(axes[0, 2], df, 'DWF',     'g2_0',  'Debye-Waller factor', 'g²(0)')
 
     _scatter(axes[1, 0], df, 'ZPL_nm',  'T1_ns', 'ZPL (nm)',      'T₁ (ns)  [confirmed SPE only]')
     _scatter(axes[1, 1], df, 'FWHM_nm', 'T1_ns', 'ZPL FWHM (nm)', 'T₁ (ns)  [confirmed SPE only]')
-    _scatter(axes[1, 2], df, 'rate_kHz', 'T1_ns', 'Emission rate (kHz)', 'T₁ (ns)  [confirmed SPE only]')
+    _scatter(axes[1, 2], df, 'rate_kHz','T1_ns', 'Emission rate (kHz)', 'T₁ (ns)  [confirmed SPE only]')
 
     _scatter(axes[2, 0], df, 'ZPL_nm',  'T2_ns', 'ZPL (nm)',      'T₂ (ns)  [confirmed SPE only]')
     _scatter(axes[2, 1], df, 'FWHM_nm', 'T2_ns', 'ZPL FWHM (nm)', 'T₂ (ns)  [confirmed SPE only]')
-    axes[2, 2].axis('off')
+    _scatter(axes[2, 2], df, 'DWF',     'FWHM_nm', 'Debye-Waller factor', 'ZPL FWHM (nm)')
 
     fig.tight_layout()
     out_path = os.path.join(out_dir, 'emitter_correlations.png')
@@ -552,22 +656,27 @@ def make_histogram_plots(df, out_dir):
     fig, axes = plt.subplots(1, 4, figsize=(17, 4))
     fig.suptitle('Emitter property distributions', fontsize=13)
 
-    axes[0].hist(df['ZPL_nm'].dropna(),  bins=20, edgecolor='k', color='steelblue')
-    axes[0].set_xlabel('ZPL (nm)');  axes[0].set_ylabel('Count')
-    axes[0].set_title('ZPL')
+    axes[0].hist(df['ZPL_nm'].dropna(), bins=20, edgecolor='k', color='steelblue')
+    axes[0].set_xlabel('ZPL (nm)'); axes[0].set_ylabel('Count'); axes[0].set_title('ZPL')
 
     axes[1].hist(df['FWHM_nm'].dropna(), bins=20, edgecolor='k', color='seagreen')
     axes[1].set_xlabel('FWHM (nm)'); axes[1].set_ylabel('Count')
     axes[1].set_title(f'FWHM  (<= {MAX_FWHM_NM} nm)')
 
-    axes[2].hist(df['DWF'].dropna(), bins=20, edgecolor='k', color='goldenrod')
+    dwf_ok = df.loc[df['DWF_truncated'] == False, 'DWF'].dropna()
+    dwf_tr = df.loc[df['DWF_truncated'] == True,  'DWF'].dropna()
+    if len(dwf_ok) or len(dwf_tr):
+        bins = np.linspace(0, 1, 21)
+        axes[2].hist([dwf_ok, dwf_tr], bins=bins, stacked=True, edgecolor='k',
+                     color=['goldenrod', '0.75'],
+                     label=[f'measured (n={len(dwf_ok)})', f'upper bound (n={len(dwf_tr)})'])
+        axes[2].legend(fontsize=7)
     axes[2].set_xlabel('Debye-Waller factor'); axes[2].set_ylabel('Count')
-    axes[2].set_title('DWF')
+    axes[2].set_title('DWF (integration, fine_ cube)')
 
-    axes[3].hist(df['g2_0'].dropna(),    bins=20, edgecolor='k', color='salmon')
+    axes[3].hist(df['g2_0'].dropna(), bins=20, edgecolor='k', color='salmon')
     axes[3].axvline(0.5, ls='--', color='red', lw=1.2, label='g²(0) = 0.5')
-    axes[3].set_xlabel('g²(0)');     axes[3].set_ylabel('Count')
-    axes[3].set_title('g²(0)')
+    axes[3].set_xlabel('g²(0)'); axes[3].set_ylabel('Count'); axes[3].set_title('g²(0)')
     axes[3].legend()
 
     fig.tight_layout()
@@ -581,46 +690,52 @@ def make_histogram_plots(df, out_dir):
 
 def main():
     ap = argparse.ArgumentParser(description='Analyse HT fullauto emitter data.')
-    ap.add_argument('--data-dir', default=DATA_DIR, help='Path to data/ folder')
-    ap.add_argument('--out-dir',  default=OUT_DIR,  help='Output folder for CSV and plots')
+    ap.add_argument('--data-dir', default=DATA_DIR)
+    ap.add_argument('--out-dir',  default=OUT_DIR)
     ap.add_argument('--verbose', action='store_true',
-                     help='Print the reason each PSB (DWF) fit was skipped')
+                    help='Print per-emitter reasons for DWF/fine-match failures')
     args = ap.parse_args()
 
     print('Scanning data folders...')
     rows = list(iter_emitters(args.data_dir, verbose=args.verbose))
 
     if not rows:
-        print('No emitters found with both g2 and long_filter spectrum data.')
+        print('No emitters found with both g2 and long_ spectrum data.')
         return
 
     df = pd.DataFrame(rows)
 
-    # ── Flag and drop g²(0) < 0 (unphysical fit) ─────────────────────────────
     bad = df[df['g2_0'] < 0]
     if not bad.empty:
         print('\nIgnored (g²(0) < 0 — unphysical fit):')
         for _, row in bad.iterrows():
-            print(f'  {row["run"]}  /  g2_{row["x"]}_{row["y"]}  '
-                  f'g²(0) = {row["g2_0"]:.3f}')
+            print(f'  {row["run"]}  /  g2_{row["x"]}_{row["y"]}  g²(0) = {row["g2_0"]:.3f}')
         df = df[df['g2_0'] >= 0].reset_index(drop=True)
 
     n_single = int((df['g2_0'] < 0.5).sum())
-    n_t1     = int(df['T1_ns'].notna().sum())
-    n_t2     = int(df['T2_ns'].notna().sum())
     print(f'\nFound {len(df)} valid emitters across {df["run"].nunique()} runs '
-          f'({n_single} single emitters with g²(0) < 0.5, '
-          f'{n_t1} with a reported T1, {n_t2} with a reported T2).\n')
+          f'({n_single} single emitters, '
+          f'{int(df.T1_ns.notna().sum())} with T1, {int(df.T2_ns.notna().sum())} with T2, '
+          f'{int(df.DWF.notna().sum())} with DWF).\n')
 
-    cols = ['chip', 'field', 'x', 'y', 'ZPL_nm', 'FWHM_nm', 'DWF', 'g2_0',
-            'T1_ns', 'T2_ns', 'ZPL_intensity', 'rate_kHz']
-    print(df[cols].to_string(index=False, float_format=lambda v: f'{v:.3f}' if pd.notna(v) else 'None'))
+    cols = ['chip', 'field', 'x', 'y', 'ZPL_nm', 'FWHM_nm', 'DWF', 'DWF_truncated',
+            'g2_0', 'T1_ns', 'T2_ns', 'rate_kHz']
+    print(df[cols].to_string(index=False,
+          float_format=lambda v: f'{v:.3f}' if pd.notna(v) else 'None'))
 
-    brightness_rate = df[['ZPL_intensity', 'rate_kHz']].dropna()
-    if len(brightness_rate) >= 3:
-        r = brightness_rate['ZPL_intensity'].corr(brightness_rate['rate_kHz'])
-        print(f'\nBrightness (ZPL intensity) vs emission rate: '
-              f'Pearson r = {r:.3f}  (n={len(brightness_rate)})')
+    # sanity: the fine cube's own ZPL should agree with the long_ ZPL
+    chk = df[['ZPL_nm', 'ZPL_fine_nm']].dropna()
+    if len(chk) >= 3:
+        d = (chk.ZPL_fine_nm - chk.ZPL_nm).abs()
+        print(f'\nZPL cross-check (long_ vs fine_): median |diff| = {d.median():.2f} nm, '
+              f'max = {d.max():.2f} nm  (n={len(chk)})')
+        if d.max() > 5:
+            print('  WARNING: some emitters disagree by >5 nm — check the fine-pixel match')
+
+    flagged = df['fine_is_flagged'].dropna()
+    if len(flagged):
+        print(f'Fine-pixel match landed on a flagged (classified==1) pixel for '
+              f'{int(flagged.sum())}/{len(flagged)} emitters')
 
     os.makedirs(args.out_dir, exist_ok=True)
     csv_path = os.path.join(args.out_dir, 'emitter_summary.csv')
