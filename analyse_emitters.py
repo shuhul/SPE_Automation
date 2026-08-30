@@ -630,20 +630,29 @@ def _scatter(ax, df, xcol, ycol, xlabel, ylabel):
 
 
 def make_scatter_plots(df, out_dir):
-    fig, axes = plt.subplots(3, 3, figsize=(16, 13))
+    # 4 rows x 3 cols. Row layout is consistent: the quantity being explained
+    # is always on Y, the explanatory variable on X (ZPL / FWHM / other).
+    fig, axes = plt.subplots(4, 3, figsize=(16, 17))
     fig.suptitle('Emitter correlation analysis', fontsize=14, fontweight='bold')
 
-    _scatter(axes[0, 0], df, 'ZPL_nm',  'g2_0',  'ZPL (nm)',      'g²(0)')
-    _scatter(axes[0, 1], df, 'FWHM_nm', 'g2_0',  'ZPL FWHM (nm)', 'g²(0)')
-    _scatter(axes[0, 2], df, 'DWF',     'g2_0',  'Debye-Waller factor', 'g²(0)')
+    _scatter(axes[0, 0], df, 'ZPL_nm',   'g2_0',  'ZPL (nm)',            'g²(0)')
+    _scatter(axes[0, 1], df, 'FWHM_nm',  'g2_0',  'ZPL FWHM (nm)',       'g²(0)')
+    _scatter(axes[0, 2], df, 'rate_kHz', 'g2_0',  'Emission rate (kHz)', 'g²(0)')
 
-    _scatter(axes[1, 0], df, 'ZPL_nm',  'T1_ns', 'ZPL (nm)',      'T₁ (ns)  [confirmed SPE only]')
-    _scatter(axes[1, 1], df, 'FWHM_nm', 'T1_ns', 'ZPL FWHM (nm)', 'T₁ (ns)  [confirmed SPE only]')
-    _scatter(axes[1, 2], df, 'rate_kHz','T1_ns', 'Emission rate (kHz)', 'T₁ (ns)  [confirmed SPE only]')
+    _scatter(axes[1, 0], df, 'ZPL_nm',   'T1_ns', 'ZPL (nm)',            'T₁ (ns)  [confirmed SPE only]')
+    _scatter(axes[1, 1], df, 'FWHM_nm',  'T1_ns', 'ZPL FWHM (nm)',       'T₁ (ns)  [confirmed SPE only]')
+    _scatter(axes[1, 2], df, 'rate_kHz', 'T1_ns', 'Emission rate (kHz)', 'T₁ (ns)  [confirmed SPE only]')
 
-    _scatter(axes[2, 0], df, 'ZPL_nm',  'T2_ns', 'ZPL (nm)',      'T₂ (ns)  [confirmed SPE only]')
-    _scatter(axes[2, 1], df, 'FWHM_nm', 'T2_ns', 'ZPL FWHM (nm)', 'T₂ (ns)  [confirmed SPE only]')
-    _scatter(axes[2, 2], df, 'DWF',     'FWHM_nm', 'Debye-Waller factor', 'ZPL FWHM (nm)')
+    _scatter(axes[2, 0], df, 'ZPL_nm',   'T2_ns', 'ZPL (nm)',            'T₂ (ns)  [confirmed SPE only]')
+    _scatter(axes[2, 1], df, 'FWHM_nm',  'T2_ns', 'ZPL FWHM (nm)',       'T₂ (ns)  [confirmed SPE only]')
+    axes[2, 2].axis('off')
+
+    # DWF row. DWF vs FWHM and DWF vs T1 are the direct tests of whether
+    # electron-phonon coupling is the common cause behind the T1-FWHM trend:
+    # stronger coupling should broaden the ZPL, lower the DWF, and shorten T1.
+    _scatter(axes[3, 0], df, 'ZPL_nm',   'DWF',   'ZPL (nm)',            'Debye-Waller factor')
+    _scatter(axes[3, 1], df, 'FWHM_nm',  'DWF',   'ZPL FWHM (nm)',       'Debye-Waller factor')
+    _scatter(axes[3, 2], df, 'T1_ns',    'DWF',   'T₁ (ns)  [confirmed SPE only]', 'Debye-Waller factor')
 
     fig.tight_layout()
     out_path = os.path.join(out_dir, 'emitter_correlations.png')
