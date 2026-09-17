@@ -11,24 +11,17 @@ _trapz = getattr(np, 'trapezoid', None) or np.trapz
 DATA_DIR = 'data'
 OUT_DIR  = 'analysis_output'
 
-# ── g2 calculation config ─────────────────────────────────────────────────────
-# Window widened from the original 50 ns to 400 ns: this defect isn't
-# carbon-doped, and literature for non-carbon hBN defects reports metastable
-# (T2) lifetimes more like ~100-300 ns rather than the tens-of-microseconds
-# seen for carbon-related centers. A 50 ns window has almost no leverage on
-# a ~200 ns decay; 400 ns gives several T2 time constants of margin before
-# the wing region, so the far-wing normalisation actually sits past the
-# metastable decay instead of extrapolating through it.
-G2TIME_NS          = 400.0    # correlation half-window (ns) — was 50.0
-TIMEBIN_NS         = 0.25     # bin width (ns) — unchanged, still resolves T1 fine
+
+G2TIME_NS          = 400.0   
+TIMEBIN_NS         = 0.25     
 AFTERFLASH_LOW_NS  = 15.0
 AFTERFLASH_HIGH_NS = 35.0
-WING_FRAC_LOW      = 0.90     # wing now sits at 360-380 ns — check this is
-WING_FRAC_HIGH     = 0.95     # past your actual T2 once you see real fits
+WING_FRAC_LOW      = 0.90     
+WING_FRAC_HIGH     = 0.95     
 G0_FIXED           = 1.0
 SPE_THRESHOLD      = 0.5
 
-# ── Quality-control restrictions ──────────────────────────────────────────────
+
 MAX_FWHM_NM = 30.0   # reject ZPL fits wider than this — not a physically
                      # credible narrow ZPL, almost certainly a fit that
                      # locked onto background/noise instead of the real line.
@@ -39,48 +32,25 @@ MIN_T2_NS   = 1.0    # reject metastable timescales at or below this — a T2
                      # this close to T1 isn't a distinct metastable process,
                      # it's the fit failing to separate T1 and T2.
 
-# ── DWF / PSB config  (see the block comment below on why this changed) ──────
+# ── DWF / PSB config  
 #
 # DWF is now computed by INTEGRATION from the FINE scan cube, not by fitting
-# a Gaussian to the PSB in the long_ spectrum. Three reasons:
-#
-#   1. The PSB is not Gaussian. In hBN it is broad, asymmetric and usually
-#      multi-peaked (several phonon modes), so a single Gaussian is the wrong
-#      model regardless of SNR. DWF = I_ZPL/(I_ZPL+I_PSB) is defined with
-#      INTEGRATED intensities anyway — the PSB never needed to be fitted.
-#
-#   2. long_ scans (600 g/mm @ 595 nm) truncate the PSB for most emitters.
-#      Measured DWF success rate by ZPL: 39% for 560-570 nm, 4% for 570-585,
-#      0% for 585-600 — a clean signature of the sideband running off the
-#      detector. fine_ scans (150 g/mm @ 700 nm) cover ~415-980 nm, so the
-#      whole PSB and a clean red background anchor are both present.
-#
-#   3. BACKGROUND CHOICE DOMINATES THE ANSWER. On one real emitter the same
-#      spectrum gave DWF = 0.79 / 0.68 / 0.51 for a flat high baseline / a
-#      sloping baseline / a flat dark baseline. That spread is larger than
-#      any emitter-to-emitter variation you would be trying to measure, so
-#      the background is now fixed with two anchors and interpolated.
-#      By contrast the other choices barely matter: integrating the PSB to
-#      700 vs 900 nm moved DWF by 0.015.
-#
-# NOTE ON RESOLUTION: ZPL_nm and FWHM_nm still come from the long_ spectrum
-# (600 g/mm, 10 s) because it resolves the linewidth far better than the
-# fine cube (150 g/mm, 1 s). Only the DWF integration uses fine_. The fine
-# cube's own ZPL fit is reported separately as ZPL_fine_nm / FWHM_fine_nm so
-# the two can be cross-checked — do NOT use FWHM_fine_nm as a linewidth.
+# a Gaussian to the PSB in the long_ spectrum. 
+
 
 LASER_CUTOFF_NM   = 556.0            # ignore bluer: 532 laser leak + 550 LP edge
-# The blue background anchor is placed RELATIVE to the fitted ZPL, not at
-# fixed wavelengths. A fixed window (e.g. 556-578 nm) silently overlaps the
-# ZPL for any emitter bluer than ~585 nm: it then reads the ZPL's own blue
-# flank as "background", subtracts it from the whole spectrum, and wipes the
-# sideband out entirely (observed: a 575 nm emitter returned I_psb = 0 and
-# DWF = 1.0). Anchor spans [mu - BLUE_ANCHOR_SIGMA_FAR*sigma,
-# mu - BLUE_ANCHOR_SIGMA_NEAR*sigma], clipped at LASER_CUTOFF_NM.
+
 BLUE_ANCHOR_SIGMA_NEAR = 4.0         # inner edge, in sigma from the ZPL centre
 BLUE_ANCHOR_SIGMA_FAR  = 9.0         # outer edge
 BLUE_ANCHOR_MIN_NM     = 4.0         # need at least this wide a clean window
 RED_ANCHOR_NM     = (780.0, 950.0)   # background anchor where emission has decayed
+
+
+DWF_METHOD        = 'multigauss'     
+MULTIGAUSS_ZPL_INCLUDES_ACOUSTIC = False   
+MULTIGAUSS_ACOUSTIC_NAMES = ('acoustic1',)
+PSB_WINDOW_MEV    = 450.0            # PSB integrated over this energy below the ZPL
+_HC_NM_EV         = 1239.84
 ZPL_INT_SIGMA     = 3.0              # ZPL integration window = mu +/- this many sigma
 PSB_END_NM        = 760.0            # integrate PSB out to here
 FINE_MATCH_TOL_UM = 0.30             # g2 coord must land within this of a fine pixel
@@ -91,7 +61,6 @@ _FWHM_K = 2.0 * np.sqrt(2.0 * np.log(2.0))   # 2.3548
 _AREA_K = np.sqrt(2.0 * np.pi)
 
 
-# ── Spectrum helpers ──────────────────────────────────────────────────────────
 
 def _gaussian1d(x, A, mu, sigma, bkg):
     return A * np.exp(-(x - mu) ** 2 / (2 * sigma ** 2)) + bkg
@@ -201,6 +170,115 @@ def _find_fine_pixel(run_path, tx, ty, tol_um=FINE_MATCH_TOL_UM, verbose=False):
     return best
 
 
+
+# ── Multi-Gaussian ZPL+PSB decomposition
+_HC = 1239.84
+_SQ2PI = np.sqrt(2.0 * np.pi)
+
+# (name, offset_lo, offset_guess, offset_hi, sig_lo, sig_guess, sig_hi)  [meV]
+PHONON_MODES = [
+    ('acoustic1',  15.0,  40.0,  80.0,   8.0, 25.0,  60.0),
+    ('acoustic2',  80.0, 110.0, 145.0,  10.0, 30.0,  70.0),
+    ('optical1',  148.0, 165.0, 182.0,   8.0, 20.0,  45.0),
+    ('optical2',  182.0, 195.0, 225.0,   8.0, 22.0,  50.0),
+    ('optical2nd',280.0, 320.0, 370.0,  15.0, 45.0, 100.0),
+]
+
+
+def _to_energy(wl_nm, I_lam, lo_nm=LASER_CUTOFF_NM, hi_nm=950.0):
+    """Wavelength -> energy with the Jacobian I(E) = I(lam)*lam^2/hc."""
+    wl_nm = np.asarray(wl_nm, float); I_lam = np.asarray(I_lam, float)
+    m = (wl_nm > lo_nm) & (wl_nm < hi_nm)
+    wl, I = wl_nm[m], I_lam[m]
+    E = _HC / wl
+    I_E = I * wl ** 2 / _HC
+    o = np.argsort(E)
+    return E[o], I_E[o]
+
+
+def _mg_model(n):
+    def f(E, *p):
+        A0, E0, s0 = p[0], p[1], p[2]
+        y = A0 * np.exp(-(E - E0) ** 2 / (2 * s0 ** 2))
+        for k in range(n):
+            A, d, s = p[3 + 3 * k], p[4 + 3 * k], p[5 + 3 * k]
+            y = y + A * np.exp(-(E - (E0 - d)) ** 2 / (2 * s ** 2))
+        return y
+    return f
+
+
+def _dwf_multigauss(wl, sp, verbose=False, label=None):
+    """ZPL + phonon replicas in energy space; DWF from analytic component areas."""
+    tag = f'[{label}] ' if label else ''
+    E, I_E = _to_energy(wl, sp)
+    if E.size < 50:
+        return dict(dwf=None, note='too few spectral points for multigauss')
+
+    bkg = float(np.median(I_E[E <= np.percentile(E, 5)]))   # reddest 5%
+    y = I_E - bkg
+    i0 = int(np.argmax(y)); E0_0 = float(E[i0]); A0_0 = float(max(y[i0], 1.0))
+
+    p0 = [A0_0, E0_0, 0.012]
+    lo = [0.0, E0_0 - 0.05, 0.003]
+    hi = [A0_0 * 5, E0_0 + 0.05, 0.040]
+    for (_, dlo, dg, dhi, slo, sg, shi) in PHONON_MODES:
+        p0 += [A0_0 * 0.15, dg / 1000.0, sg / 1000.0]
+        lo += [0.0, dlo / 1000.0, slo / 1000.0]
+        hi += [A0_0 * 5, dhi / 1000.0, shi / 1000.0]
+
+    model = _mg_model(len(PHONON_MODES))
+    try:
+        popt, _ = curve_fit(model, E, y, p0=p0, bounds=(lo, hi), maxfev=60000)
+    except Exception as exc:
+        if verbose:
+            print(f'{tag}multigauss fit failed ({exc})')
+        return dict(dwf=None, note=f'multigauss fit failed ({exc})')
+
+    A0, E0, s0 = popt[0], popt[1], popt[2]
+    area_zpl = float(A0 * s0 * _SQ2PI)
+    comps, area_psb, area_ac = [], 0.0, 0.0
+    pinned = []
+    for k, (name, dlo, _dg, dhi, slo, _sg, shi) in enumerate(PHONON_MODES):
+        A, d, sg = popt[3 + 3 * k], popt[4 + 3 * k], popt[5 + 3 * k]
+        a = float(A * sg * _SQ2PI)
+        area_psb += a
+        if name.startswith('acoustic1'):
+            area_ac += a
+        comps.append((name, a, float(d * 1000), float(sg * 1000)))
+        tol = 1e-3
+        if (abs(d * 1000 - dlo) < 0.5 or abs(d * 1000 - dhi) < 0.5 or
+                abs(sg * 1000 - slo) < 0.5 or abs(sg * 1000 - shi) < 0.5):
+            pinned.append(name)
+
+    total = area_zpl + area_psb
+    if total <= 0:
+        return dict(dwf=None, note='multigauss gave no net area')
+
+    resid = y - model(E, *popt)
+    sst = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1 - float(np.sum(resid ** 2)) / sst if sst > 0 else float('nan')
+
+    zpl_part = area_zpl + (area_ac if MULTIGAUSS_ZPL_INCLUDES_ACOUSTIC else 0.0)
+    fwhm_meV = float(2.355 * s0 * 1000.0)
+    zpl_nm = float(_HC / E0)
+
+    if verbose:
+        print(f'{tag}multigauss R2={r2:.4f}  ZPL {zpl_nm:.1f} nm  '
+              f'acoustic1 = {100*area_ac/total:.0f}% of total'
+              + (f'  PINNED: {pinned}' if pinned else ''))
+
+    return dict(dwf=float(zpl_part / total),
+                dwf_zpl_only=float(area_zpl / total),
+                dwf_with_acoustic=float((area_zpl + area_ac) / total),
+                I_zpl=area_zpl, I_psb=area_psb, acoustic_frac=float(area_ac / total),
+                zpl_fine_nm=zpl_nm, fwhm_fine_nm=float(fwhm_meV * _HC / (E0 ** 2) / 1000.0),
+                zpl_fwhm_meV=fwhm_meV, mg_r2=float(r2),
+                mg_pinned=','.join(pinned) if pinned else '',
+                mg_components=';'.join(f'{n}:{a:.4g}@{d:.0f}meV' for n, a, d, _ in comps),
+                truncated=False, bg_mode='multigauss (energy space)',
+                note='ok' if not pinned else f'ok (components pinned: {",".join(pinned)})')
+
+
 def _dwf_by_integration(wl, sp, verbose=False, label=None):
     """ZPL fit + sloping background + numeric PSB integration.
 
@@ -211,8 +289,7 @@ def _dwf_by_integration(wl, sp, verbose=False, label=None):
     tag = f'[{label}] ' if label else ''
     wl = np.asarray(wl, float); sp = np.asarray(sp, float)
 
-    # 1. fit the ZPL in the fine cube — needed for the integration window.
-    #    Never touch < LASER_CUTOFF_NM (532 laser leak + longpass edge).
+    
     m = (wl > LASER_CUTOFF_NM) & (wl < 640.0)
     if m.sum() < 10:
         return dict(dwf=None, note='fine cube has no data in ZPL range')
@@ -248,7 +325,7 @@ def _dwf_by_integration(wl, sp, verbose=False, label=None):
         return dict(dwf=None, note='fine-cube ZPL amplitude non-positive')
     fwhm_fine = float(_FWHM_K * sigma)
 
-    # 2. background — anchors placed RELATIVE to the fitted ZPL
+    # 2. background
     rm = (wl >= RED_ANCHOR_NM[0]) & (wl <= RED_ANCHOR_NM[1])
     if rm.sum() < 5:
         if verbose:
@@ -258,45 +335,67 @@ def _dwf_by_integration(wl, sp, verbose=False, label=None):
                     note=f'red background anchor empty (data ends {wl.max():.0f} nm)')
     xr, yr = float(wl[rm].mean()), float(np.median(sp[rm]))
 
-    b_hi = mu - BLUE_ANCHOR_SIGMA_NEAR * sigma
-    b_lo = max(LASER_CUTOFF_NM, mu - BLUE_ANCHOR_SIGMA_FAR * sigma)
-    bm = (wl >= b_lo) & (wl <= b_hi)
-    if (b_hi - b_lo) >= BLUE_ANCHOR_MIN_NM and bm.sum() >= 5:
-        xb, yb = float(wl[bm].mean()), float(np.median(sp[bm]))
-        corr = sp - (yb + (yr - yb) / (xr - xb) * (wl - xb))
-        bg_mode = f'sloping ({b_lo:.0f}-{b_hi:.0f} nm -> red)'
-    else:
-        # No clean gap between the longpass edge and the ZPL: fall back to a
-        # flat baseline from the red anchor only. This can UNDER-subtract any
-        # diffuse flake PL, which inflates the broad PSB more than the narrow
-        # ZPL and therefore biases DWF DOWNWARD — the opposite direction from
-        # truncation. Flagged so it can be filtered later.
+    if DWF_METHOD == 'uniform':
+        # Same treatment for every emitter — no ZPL-dependent mode switch.
         yb = float('nan')
         corr = sp - yr
-        bg_mode = 'flat-from-red (no clean blue window)'
-        if verbose:
-            print(f'{tag}DWF: blue anchor would overlap the ZPL '
-                  f'(mu={mu:.1f}, sigma={sigma:.1f}) — using {bg_mode}')
+        bg_mode = 'flat-from-red (uniform)'
+    else:
+        b_hi = mu - BLUE_ANCHOR_SIGMA_NEAR * sigma
+        b_lo = max(LASER_CUTOFF_NM, mu - BLUE_ANCHOR_SIGMA_FAR * sigma)
+        bm = (wl >= b_lo) & (wl <= b_hi)
+        if (b_hi - b_lo) >= BLUE_ANCHOR_MIN_NM and bm.sum() >= 5:
+            xb, yb = float(wl[bm].mean()), float(np.median(sp[bm]))
+            corr = sp - (yb + (yr - yb) / (xr - xb) * (wl - xb))
+            bg_mode = f'sloping ({b_lo:.0f}-{b_hi:.0f} nm -> red)'
+        else:
+            yb = float('nan')
+            corr = sp - yr
+            bg_mode = 'flat-from-red (no clean blue window)'
+            if verbose:
+                print(f'{tag}DWF: blue anchor would overlap the ZPL '
+                      f'(mu={mu:.1f}, sigma={sigma:.1f}) — using {bg_mode}')
 
-    # 3. integrate — no PSB model at all
-    zlo, zhi = mu - ZPL_INT_SIGMA * sigma, mu + ZPL_INT_SIGMA * sigma
-    phi = min(PSB_END_NM, float(wl.max()))
-    zm = (wl >= zlo) & (wl <= zhi)
-    pm = (wl > zhi) & (wl <= phi)
-    if zm.sum() < 3 or pm.sum() < 5:
-        return dict(dwf=None, zpl_fine_nm=float(mu), fwhm_fine_nm=fwhm_fine,
-                    note='ZPL or PSB integration window too small')
-    I_zpl = float(_trapz(np.clip(corr[zm], 0, None), wl[zm]))
-    I_psb = float(_trapz(np.clip(corr[pm], 0, None), wl[pm]))
+    # 3. integrate
+    if DWF_METHOD == 'uniform':
+        # ZPL area analytically from the fitted Gaussian; PSB = residual after
+        # subtracting that Gaussian, over a fixed ENERGY window below the ZPL.
+        # Fixed energy (not wavelength) matters: the sideband sits a fixed
+        # phonon energy below the ZPL, so a fixed-nm cut truncates redder
+        # emitters more and inflates their DWF.
+        zpl_model = A * np.exp(-(wl - mu) ** 2 / (2 * sigma ** 2))
+        I_zpl = float(A * sigma * _AREA_K)
+        E_zpl = _HC_NM_EV / mu
+        psb_end = _HC_NM_EV / max(E_zpl - PSB_WINDOW_MEV / 1000.0, 1e-6)
+        phi = min(psb_end, float(wl.max()))
+        pm = (wl > mu - ZPL_INT_SIGMA * sigma) & (wl <= phi)
+        if pm.sum() < 5:
+            return dict(dwf=None, zpl_fine_nm=float(mu), fwhm_fine_nm=fwhm_fine,
+                        bg_mode=bg_mode, note='PSB integration window too small')
+        I_psb = float(_trapz(np.clip(corr - zpl_model, 0, None)[pm], wl[pm]))
+    else:
+        zlo, zhi = mu - ZPL_INT_SIGMA * sigma, mu + ZPL_INT_SIGMA * sigma
+        phi = min(PSB_END_NM, float(wl.max()))
+        zm = (wl >= zlo) & (wl <= zhi)
+        pm = (wl > zhi) & (wl <= phi)
+        if zm.sum() < 3 or pm.sum() < 5:
+            return dict(dwf=None, zpl_fine_nm=float(mu), fwhm_fine_nm=fwhm_fine,
+                        bg_mode=bg_mode, note='ZPL or PSB integration window too small')
+        I_zpl = float(_trapz(np.clip(corr[zm], 0, None), wl[zm]))
+        I_psb = float(_trapz(np.clip(corr[pm], 0, None), wl[pm]))
+
     if I_zpl + I_psb <= 0:
         return dict(dwf=None, zpl_fine_nm=float(mu), fwhm_fine_nm=fwhm_fine,
-                    note='no net intensity after background subtraction')
+                    bg_mode=bg_mode, note='no net intensity after background subtraction')
 
     # 4. truncation flag — a clipped PSB inflates DWF, so mark it as a bound
     tail = corr[(wl > phi - 15) & (wl <= phi)]
     psb_peak = float(np.max(corr[pm])) if pm.any() else 0.0
-    truncated = bool(psb_peak > 0 and tail.size and
-                     np.median(tail) > TRUNCATION_FRAC * psb_peak)
+    psb_end_requested = (_HC_NM_EV / max(_HC_NM_EV / mu - PSB_WINDOW_MEV / 1000.0, 1e-6)
+                         if DWF_METHOD == 'uniform' else PSB_END_NM)
+    truncated = bool((phi < psb_end_requested - 1) or
+                     (psb_peak > 0 and tail.size and
+                      np.median(tail) > TRUNCATION_FRAC * psb_peak))
 
     dwf = I_zpl / (I_zpl + I_psb)
     if I_psb <= 0 or dwf > 0.995:
@@ -317,6 +416,10 @@ def _dwf_by_integration(wl, sp, verbose=False, label=None):
                 bg_mode=bg_mode, note=note)
 
 
+
+# ── Multi-Gaussian ZPL + phonon-replica decomposition ─────────
+
+# (name, offset_lo, offset_guess, offset_hi, sigma_lo, sigma_guess, sigma_hi)  [meV]
 def _dwf_from_fine(run_path, tx, ty, verbose=False, label=None):
     """g2 target coordinate -> matching fine-cube pixel -> DWF by integration."""
     hit = _find_fine_pixel(run_path, tx, ty, verbose=verbose)
@@ -329,8 +432,11 @@ def _dwf_from_fine(run_path, tx, ty, verbose=False, label=None):
         return dict(dwf=None, note='fine cube missing out.npy/wl.npy')
     if cube.ndim != 3 or hit['iy'] >= cube.shape[0] or hit['ix'] >= cube.shape[1]:
         return dict(dwf=None, note='fine cube shape unexpected')
-    res = _dwf_by_integration(wl, cube[hit['iy'], hit['ix'], :].astype(float),
-                              verbose=verbose, label=label)
+    spec = cube[hit['iy'], hit['ix'], :].astype(float)
+    if DWF_METHOD == 'multigauss':
+        res = _dwf_multigauss(wl, spec, verbose=verbose, label=label)
+    else:
+        res = _dwf_by_integration(wl, spec, verbose=verbose, label=label)
     res.update(fine_folder=os.path.basename(hit['folder']),
                fine_match_um=hit['dist_um'],
                fine_n_flagged=hit['n_flagged'],
@@ -563,7 +669,17 @@ def iter_emitters(data_dir, verbose=False):
                 'fine_match_um':  dwf_res.get('fine_match_um'),
                 'fine_n_flagged': dwf_res.get('fine_n_flagged'),
                 'fine_is_flagged': dwf_res.get('fine_is_flagged'),
+                'DWF_zpl_only':   dwf_res.get('dwf_zpl_only'),
+                'DWF_with_acoustic': dwf_res.get('dwf_with_acoustic'),
+                'acoustic_frac':  dwf_res.get('acoustic_frac'),
+                'mg_r2':          dwf_res.get('mg_r2'),
+                'mg_pinned':      dwf_res.get('mg_pinned'),
+                'mg_components':  dwf_res.get('mg_components'),
                 'dwf_bg_mode':    dwf_res.get('bg_mode'),
+                'mg_r2':          dwf_res.get('mg_r2'),
+                'mg_pinned':      dwf_res.get('mg_pinned'),
+                'mg_acoustic_frac': dwf_res.get('mg_acoustic_frac'),
+                'mg_optical1_meV': dwf_res.get('mg_optical1_meV'),
                 'dwf_note':       dwf_res.get('note'),
                 'g2_0':           g2_0_norm,
                 'T1_ns':          t1_out,
@@ -592,10 +708,66 @@ def iter_emitters(data_dir, verbose=False):
 
 _ORIGIN_VISIBLE_COLS = {'FWHM_nm', 'g2_0', 'T1_ns', 'T2_ns', 'rate_kHz',
                         'ZPL_intensity', 'DWF'}
-_POINT_COLOR = '#4C72B0'
+
+# ── Colour-coding by ZPL ─────────────────────────────────────────────────────
+# Each emitter gets a colour from its ZPL wavelength and KEEPS that colour in
+# every panel of every figure, so a point can be tracked across the whole
+# analysis. This is an identification channel, not a physical colour — the
+# ramp is stretched over the ZPL range purely for discrimination
+ZPL_COLOR_RANGE = (560.0, 625.0)   # set to None to auto-scale to the data
+ZPL_CMAP = plt.cm.rainbow
+_POINT_COLOR = '#4C72B0'           # fallback when ZPL is missing
+_NO_ZPL_COLOR = (0.65, 0.65, 0.65, 1.0)
 
 
-def _scatter(ax, df, xcol, ycol, xlabel, ylabel):
+def _zpl_colors(df, verbose=True):
+    """Colour per emitter from ZPL_nm. Returns (colors, norm).
+
+    Same ZPL -> same colour on every panel and every figure, because the
+    scale is fixed by ZPL_COLOR_RANGE rather than by the current dataframe.
+    """
+    z = df['ZPL_nm'].astype(float)
+    finite = z[np.isfinite(z)]
+
+    if ZPL_COLOR_RANGE is not None:
+        vmin, vmax = ZPL_COLOR_RANGE
+        if verbose and not finite.empty:
+            out = finite[(finite < vmin) | (finite > vmax)]
+            if len(out):
+                print(f'  NOTE: {len(out)} emitter(s) outside the colour range '
+                      f'{vmin:.0f}-{vmax:.0f} nm (min {finite.min():.1f}, '
+                      f'max {finite.max():.1f}) — clamped to the end colours. '
+                      f'Consider widening ZPL_COLOR_RANGE.')
+    elif finite.empty:
+        return np.array([_NO_ZPL_COLOR] * len(df), dtype=object), None
+    else:
+        vmin, vmax = float(finite.min()), float(finite.max())
+
+    if vmax - vmin < 1e-6:
+        vmax = vmin + 1.0
+    norm = plt.Normalize(vmin=vmin, vmax=vmax)
+    cols = [(_NO_ZPL_COLOR if not np.isfinite(v) else ZPL_CMAP(norm(np.clip(v, vmin, vmax))))
+            for v in z]
+    return np.array(cols, dtype=object), norm
+
+
+def _add_zpl_colorbar(fig, norm, label='ZPL (nm) — point colour identifies the emitter'):
+    if norm is None:
+        return
+    sm = plt.cm.ScalarMappable(cmap=ZPL_CMAP, norm=norm)
+    sm.set_array([])
+    cax = fig.add_axes([0.25, 0.012, 0.5, 0.010])
+    cb = fig.colorbar(sm, cax=cax, orientation='horizontal')
+    cb.set_label(label, fontsize=10)
+
+
+def _scatter(ax, df, xcol, ycol, xlabel, ylabel, colors=None):
+    """Scatter coloured by ZPL; stars mark g²(0) < 0.5 emitters."""
+    if xcol not in df.columns or ycol not in df.columns:
+        ax.text(0.5, 0.5, f'column missing\n({xcol} / {ycol})', ha='center',
+                va='center', transform=ax.transAxes, fontsize=9, color='0.5')
+        ax.set_xlabel(xlabel, fontsize=11); ax.set_ylabel(ylabel, fontsize=11)
+        return
     sub   = df[[xcol, ycol]].copy()
     valid = sub.notna().all(axis=1)
     sub   = sub[valid]
@@ -605,13 +777,22 @@ def _scatter(ax, df, xcol, ycol, xlabel, ylabel):
         ax.set_xlabel(xlabel, fontsize=11); ax.set_ylabel(ylabel, fontsize=11)
         return
 
-    ax.scatter(sub[xcol], sub[ycol], c=_POINT_COLOR, s=25,
-               edgecolors='k', linewidths=0.4, zorder=3)
+    c = (list(np.asarray(colors, dtype=object)[valid.values])
+         if colors is not None else _POINT_COLOR)
 
-    se = df.loc[valid, 'g2_0'] < 0.5
+    se = (df.loc[valid, 'g2_0'] < 0.5).values
+    c_arr = np.asarray(c, dtype=object) if colors is not None else None
+
+    # non-SPE: circles
+    if (~se).any():
+        ax.scatter(sub[xcol].values[~se], sub[ycol].values[~se],
+                   c=(list(c_arr[~se]) if c_arr is not None else c),
+                   s=28, marker='o', edgecolors='k', linewidths=0.4, zorder=3)
+    # confirmed SPE: stars
     if se.any():
-        ax.scatter(sub.loc[se, xcol], sub.loc[se, ycol], marker='*', s=80,
-                   c=_POINT_COLOR, edgecolors='k', linewidths=0.4, zorder=4,
+        ax.scatter(sub[xcol].values[se], sub[ycol].values[se],
+                   c=(list(c_arr[se]) if c_arr is not None else c),
+                   s=90, marker='*', edgecolors='k', linewidths=0.4, zorder=4,
                    label='single emitter (g²(0) < 0.5)')
 
     if ycol == 'g2_0':
@@ -626,54 +807,69 @@ def _scatter(ax, df, xcol, ycol, xlabel, ylabel):
     if ycol in _ORIGIN_VISIBLE_COLS:
         top = ax.get_ylim()[1]
         ax.set_ylim(bottom=-0.05 * top, top=top * 1.1)
-    ax.legend(fontsize=8, loc='best')
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(fontsize=8, loc='best')
 
 
-def make_scatter_plots(df, out_dir):
+def make_scatter_plots(df, out_dir, colors=None, norm=None):
     # 4 rows x 3 cols. Row layout is consistent: the quantity being explained
     # is always on Y, the explanatory variable on X (ZPL / FWHM / other).
     fig, axes = plt.subplots(4, 3, figsize=(16, 17))
     fig.suptitle('Emitter correlation analysis', fontsize=14, fontweight='bold')
+    if colors is None:
+        colors, norm = _zpl_colors(df)
 
-    _scatter(axes[0, 0], df, 'ZPL_nm',   'g2_0',  'ZPL (nm)',            'g²(0)')
-    _scatter(axes[0, 1], df, 'FWHM_nm',  'g2_0',  'ZPL FWHM (nm)',       'g²(0)')
-    _scatter(axes[0, 2], df, 'rate_kHz', 'g2_0',  'Emission rate (kHz)', 'g²(0)')
+    _scatter(axes[0, 0], df, 'ZPL_nm',   'g2_0',  'ZPL (nm)',            'g²(0)', colors)
+    _scatter(axes[0, 1], df, 'FWHM_nm',  'g2_0',  'ZPL FWHM (nm)',       'g²(0)', colors)
+    _scatter(axes[0, 2], df, 'rate_kHz', 'g2_0',  'Emission rate (kHz)', 'g²(0)', colors)
 
-    _scatter(axes[1, 0], df, 'ZPL_nm',   'T1_ns', 'ZPL (nm)',            'T₁ (ns)  [confirmed SPE only]')
-    _scatter(axes[1, 1], df, 'FWHM_nm',  'T1_ns', 'ZPL FWHM (nm)',       'T₁ (ns)  [confirmed SPE only]')
-    _scatter(axes[1, 2], df, 'rate_kHz', 'T1_ns', 'Emission rate (kHz)', 'T₁ (ns)  [confirmed SPE only]')
+    _scatter(axes[1, 0], df, 'ZPL_nm',   'T1_ns', 'ZPL (nm)',            'T₁ (ns)  [confirmed SPE only]', colors)
+    _scatter(axes[1, 1], df, 'FWHM_nm',  'T1_ns', 'ZPL FWHM (nm)',       'T₁ (ns)  [confirmed SPE only]', colors)
+    _scatter(axes[1, 2], df, 'rate_kHz', 'T1_ns', 'Emission rate (kHz)', 'T₁ (ns)  [confirmed SPE only]', colors)
 
-    _scatter(axes[2, 0], df, 'ZPL_nm',   'T2_ns', 'ZPL (nm)',            'T₂ (ns)  [confirmed SPE only]')
-    _scatter(axes[2, 1], df, 'FWHM_nm',  'T2_ns', 'ZPL FWHM (nm)',       'T₂ (ns)  [confirmed SPE only]')
+    _scatter(axes[2, 0], df, 'ZPL_nm',   'T2_ns', 'ZPL (nm)',            'T₂ (ns)  [confirmed SPE only]', colors)
+    _scatter(axes[2, 1], df, 'FWHM_nm',  'T2_ns', 'ZPL FWHM (nm)',       'T₂ (ns)  [confirmed SPE only]', colors)
     axes[2, 2].axis('off')
 
     # DWF row. DWF vs FWHM and DWF vs T1 are the direct tests of whether
     # electron-phonon coupling is the common cause behind the T1-FWHM trend:
     # stronger coupling should broaden the ZPL, lower the DWF, and shorten T1.
-    _scatter(axes[3, 0], df, 'ZPL_nm',   'DWF',   'ZPL (nm)',            'Debye-Waller factor')
-    _scatter(axes[3, 1], df, 'FWHM_nm',  'DWF',   'ZPL FWHM (nm)',       'Debye-Waller factor')
-    _scatter(axes[3, 2], df, 'T1_ns',    'DWF',   'T₁ (ns)  [confirmed SPE only]', 'Debye-Waller factor')
+    _scatter(axes[3, 0], df, 'ZPL_nm',   'DWF',   'ZPL (nm)',            'Debye-Waller factor', colors)
+    _scatter(axes[3, 1], df, 'FWHM_nm',  'DWF',   'ZPL FWHM (nm)',       'Debye-Waller factor', colors)
+    _scatter(axes[3, 2], df, 'T1_ns',    'DWF',   'T₁ (ns)  [confirmed SPE only]', 'Debye-Waller factor', colors)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0.03, 1, 1])
+    _add_zpl_colorbar(fig, norm)
     out_path = os.path.join(out_dir, 'emitter_correlations.png')
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f'Saved: {out_path}')
 
 
-def make_histogram_plots(df, out_dir):
+def make_histogram_plots(df, out_dir, norm=None):
     fig, axes = plt.subplots(1, 4, figsize=(17, 4))
     fig.suptitle('Emitter property distributions', fontsize=13)
 
-    axes[0].hist(df['ZPL_nm'].dropna(), bins=20, edgecolor='k', color='steelblue')
+    zvals = df['ZPL_nm'].dropna()
+    n_, bins_, patches_ = axes[0].hist(zvals, bins=20, edgecolor='k', color='steelblue')
+    if norm is not None:   # tint each bar with the same ramp used for the points
+        for patch, left, right in zip(patches_, bins_[:-1], bins_[1:]):
+            patch.set_facecolor(ZPL_CMAP(norm(np.clip((left + right) / 2,
+                                                      norm.vmin, norm.vmax))))
     axes[0].set_xlabel('ZPL (nm)'); axes[0].set_ylabel('Count'); axes[0].set_title('ZPL')
 
     axes[1].hist(df['FWHM_nm'].dropna(), bins=20, edgecolor='k', color='seagreen')
     axes[1].set_xlabel('FWHM (nm)'); axes[1].set_ylabel('Count')
     axes[1].set_title(f'FWHM  (<= {MAX_FWHM_NM} nm)')
 
-    dwf_ok = df.loc[df['DWF_truncated'] == False, 'DWF'].dropna()
-    dwf_tr = df.loc[df['DWF_truncated'] == True,  'DWF'].dropna()
+    # tolerate CSVs written before DWF_truncated existed
+    if 'DWF' not in df.columns:
+        dwf_ok = dwf_tr = pd.Series(dtype=float)
+    elif 'DWF_truncated' in df.columns:
+        dwf_ok = df.loc[df['DWF_truncated'] != True, 'DWF'].dropna()
+        dwf_tr = df.loc[df['DWF_truncated'] == True, 'DWF'].dropna()
+    else:
+        dwf_ok = df['DWF'].dropna(); dwf_tr = pd.Series(dtype=float)
     if len(dwf_ok) or len(dwf_tr):
         bins = np.linspace(0, 1, 21)
         axes[2].hist([dwf_ok, dwf_tr], bins=bins, stacked=True, edgecolor='k',
@@ -746,13 +942,18 @@ def main():
         print(f'Fine-pixel match landed on a flagged (classified==1) pixel for '
               f'{int(flagged.sum())}/{len(flagged)} emitters')
 
+    # one colour per emitter, fixed scale, reused by every figure
+    colors, norm = _zpl_colors(df)
+    import matplotlib.colors as _mc
+    df['plot_color'] = [(_mc.to_hex(c) if c is not None else '') for c in colors]
+
     os.makedirs(args.out_dir, exist_ok=True)
     csv_path = os.path.join(args.out_dir, 'emitter_summary.csv')
     df.to_csv(csv_path, index=False)
     print(f'\nSaved: {csv_path}')
 
-    make_scatter_plots(df, args.out_dir)
-    make_histogram_plots(df, args.out_dir)
+    make_scatter_plots(df, args.out_dir, colors=colors, norm=norm)
+    make_histogram_plots(df, args.out_dir, norm=norm)
 
 
 if __name__ == '__main__':
